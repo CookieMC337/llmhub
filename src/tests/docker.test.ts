@@ -39,13 +39,17 @@ test("next emits the standalone server the image runs", async () => {
   assert.match(config, /output: "standalone"/);
 });
 
-test("the standalone trace carries the usage PDF fonts with their licenses", async () => {
+test("the standalone trace carries the PDF fonts with their licenses to both export routes", async () => {
   const config = await file("next.config.ts");
   assert.match(config, /"\/internal-api\/usage\/export": \["\.\/src\/lib\/export\/fonts\/\*"\]/);
+  assert.match(config, /"\/internal-api\/logs\/\\\\\[id\\\\\]\/export": \["\.\/src\/lib\/export\/fonts\/\*"\]/);
   const fonts = (await readdir(path.join(root, "src/lib/export/fonts"))).sort();
   assert.deepEqual(fonts, [
     "Geist-Bold.ttf.br",
+    "Geist-BoldItalic.ttf.br",
+    "Geist-Italic.ttf.br",
     "Geist-Regular.ttf.br",
+    "GeistMono-Regular.ttf.br",
     "NotoSans-Bold.ttf.br",
     "NotoSans-Regular.ttf.br",
     "NotoSansKR-Regular.ttf.br",
@@ -237,7 +241,13 @@ test("pull requests review new dependencies and audit production dependencies", 
   const verify = await file(".github/workflows/verify.yml");
   const dependencies = verify.slice(verify.indexOf("\n  dependencies:\n"));
   assert.match(dependencies, /uses: actions\/dependency-review-action@v\d+(?:\.\d+){0,2}\n {8}with:\n {10}fail-on-severity: high\n/);
-  assert.match(dependencies, /run: npm audit --omit=dev --audit-level=high/);
+  assert.match(dependencies, /run: node scripts\/audit-production\.mjs/);
+  const exceptions = JSON.parse(await file(".github/audit-exceptions.json"));
+  for (const entry of exceptions) {
+    assert.match(entry.advisory, /^GHSA(?:-[0-9a-z]{4}){3}$/);
+    assert.match(entry.reviewBy, /^\d{4}-\d{2}-\d{2}$/);
+    assert.ok(entry.package && entry.range && entry.reason.length > 40);
+  }
   assert.match(dependencies, /timeout-minutes: \d+/);
 });
 

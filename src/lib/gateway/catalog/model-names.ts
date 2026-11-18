@@ -1,3 +1,4 @@
+import { anthropicCatalogAlias, EMPTY_ANTHROPIC_INDEX, type AnthropicAliasIndex } from "@/lib/gateway/catalog/anthropic-native";
 import { isReservedAlias, modelAlias, plainModel } from "@/lib/gateway/catalog/model-alias";
 import type { JsonMap } from "@/types/gateway";
 
@@ -30,28 +31,36 @@ export function nameIndex(
   return index;
 }
 
-export function namedModel(model: string, names: ReadonlyMap<string, string>): string {
-  if (!names.size) return model;
+export function namedModel(
+  model: string,
+  names: ReadonlyMap<string, string>,
+  native: AnthropicAliasIndex = EMPTY_ANTHROPIC_INDEX,
+): string {
+  if (!names.size && !native.aliases.size) return model;
   const requested = model.trim();
   const plain = plainModel(requested);
-  const alias = names.get(modelAlias(plain));
+  const alias = names.get(modelAlias(plain)) ?? anthropicCatalogAlias(plain, native);
   return alias ? `${requested.slice(0, requested.length - plain.length)}${alias}` : model;
 }
 
-function namedChain(value: unknown, names: ReadonlyMap<string, string>): unknown {
-  if (typeof value === "string") return namedModel(value, names);
-  if (Array.isArray(value)) return value.map((item) => namedChain(item, names));
+function namedChain(value: unknown, names: ReadonlyMap<string, string>, native: AnthropicAliasIndex): unknown {
+  if (typeof value === "string") return namedModel(value, names, native);
+  if (Array.isArray(value)) return value.map((item) => namedChain(item, names, native));
   if (value && typeof value === "object" && typeof (value as JsonMap).model === "string") {
-    return { ...(value as JsonMap), model: namedModel(String((value as JsonMap).model), names) };
+    return { ...(value as JsonMap), model: namedModel(String((value as JsonMap).model), names, native) };
   }
   return value;
 }
 
-export function namedBody(body: JsonMap, names: ReadonlyMap<string, string>): JsonMap {
-  if (!names.size) return body;
+export function namedBody(
+  body: JsonMap,
+  names: ReadonlyMap<string, string>,
+  native: AnthropicAliasIndex = EMPTY_ANTHROPIC_INDEX,
+): JsonMap {
+  if (!names.size && !native.aliases.size) return body;
   const named: JsonMap = { ...body };
-  if (typeof body.model === "string") named.model = namedModel(body.model, names);
-  if ("fallbacks" in body) named.fallbacks = namedChain(body.fallbacks, names);
-  if ("fallback" in body) named.fallback = namedChain(body.fallback, names);
+  if (typeof body.model === "string") named.model = namedModel(body.model, names, native);
+  if ("fallbacks" in body) named.fallbacks = namedChain(body.fallbacks, names, native);
+  if ("fallback" in body) named.fallback = namedChain(body.fallback, names, native);
   return named;
 }

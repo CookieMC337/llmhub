@@ -12,12 +12,12 @@ import {
   CONTENT_W,
   drawFooter,
   drawHeader,
+  drawRunningHeader,
   FOOTER_RULE,
   MARGIN,
-  PAGE_H,
   pdfDocument,
-  textWidth,
 } from "./pdf";
+import { unicodeTypeface } from "./pdf-unicode";
 import type { PdfCanvas, PdfColor, PdfFont } from "@/types/export";
 
 type Style = { font: PdfFont; size: number; color: PdfColor };
@@ -26,6 +26,7 @@ type Segment = Run & { width: number };
 type Line = { segments: Segment[]; width: number };
 type Frame = { x: number; width: number; color: PdfColor; bars: number[] };
 type Draw = (page: PdfCanvas, top: number) => void;
+type Measure = PdfCanvas["textWidth"];
 
 const BODY = 9.5;
 const LEADING = 13.6;
@@ -40,7 +41,6 @@ const MAX_FIELD_LINES = 4;
 const FIELD_COLUMNS = 3;
 const FIELD_GAP = 12;
 const BOTTOM = FOOTER_RULE + 14;
-const CONTINUED_TOP = PAGE_H - MARGIN - 18;
 const BASELINE = 0.72;
 const FIT_TOLERANCE = 0.01;
 
@@ -62,7 +62,25 @@ function sameStyle(a: Segment, b: Run): boolean {
   );
 }
 
-function wrap(runs: Run[], width: number): Line[] {
+function charPieces(text: string, width: number, measure: (char: string) => number): { text: string; width: number }[] {
+  const pieces: { text: string; width: number }[] = [];
+  let piece = "";
+  let pieceWidth = 0;
+  for (const char of text) {
+    const charWidth = measure(char);
+    if (piece && pieceWidth + charWidth > width + FIT_TOLERANCE) {
+      pieces.push({ text: piece, width: pieceWidth });
+      piece = "";
+      pieceWidth = 0;
+    }
+    piece += char;
+    pieceWidth += charWidth;
+  }
+  if (piece) pieces.push({ text: piece, width: pieceWidth });
+  return pieces;
+}
+
+function wrap(runs: Run[], width: number, measure: Measure): Line[] {
   const lines: Line[] = [];
   let segments: Segment[] = [];
   let used = 0;
@@ -93,32 +111,22 @@ function wrap(runs: Run[], width: number): Line[] {
       push(segment);
       return;
     }
-    let piece = "";
-    let pieceWidth = 0;
-    for (const char of segment.text) {
-      const charWidth = textWidth(char, segment);
-      if (piece && used + pieceWidth + charWidth > width + FIT_TOLERANCE) {
-        push({ ...segment, text: piece, width: pieceWidth });
-        flush();
-        piece = "";
-        pieceWidth = 0;
-      }
-      piece += char;
-      pieceWidth += charWidth;
-    }
-    if (piece) push({ ...segment, text: piece, width: pieceWidth });
+    charPieces(segment.text, width, (char) => measure(char, segment)).forEach((piece, index) => {
+      if (index > 0) flush();
+      push({ ...segment, ...piece });
+    });
   };
 
   for (const run of runs) {
     if (run.fill) {
-      place({ ...run, width: textWidth(run.text, run) + CHIP_PAD * 2 });
+      place({ ...run, width: measure(run.text, run) + CHIP_PAD * 2 });
       continue;
     }
     for (const token of run.text.split(/(\n| +)/)) {
       if (!token) continue;
       if (token === "\n") flush();
-      else if (token.startsWith(" ")) space = segments.length ? { ...run, text: " ", width: textWidth(" ", run) } : null;
-      else place({ ...run, text: token, width: textWidth(token, run) });
+      else if (token.startsWith(" ")) space = segments.length ? { ...run, text: " ", width: measure(" ", run) } : null;
+      else place({ ...run, text: token, width: measure(token, run) });
     }
   }
   if (segments.length || lines.length === 0) flush();
@@ -143,12 +151,14 @@ function drawLine(page: PdfCanvas, line: Line, x: number, baseline: number) {
   }
 }
 
-function codeLines(value: string, perLine: number): string[] {
+function codeLines(value: string, width: number, measure: (text: string) => number): string[] {
   const out: string[] = [];
   for (const line of clean(value).replace(/\n+$/, "").split("\n")) {
-    const chars = Array.from(line);
-    if (chars.length === 0) out.push("");
-    for (let i = 0; i < chars.length; i += perLine) out.push(chars.slice(i, i + perLine).join(""));
+    if (measure(line) <= width + FIT_TOLERANCE) {
+      out.push(line);
+      continue;
+    }
+    out.push(...charPieces(line, width, measure).map((piece) => piece.text));
   }
   return out;
 }
@@ -165,23 +175,24 @@ function columnWidths(natural: number[], total: number): number[] {
 
 export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
   const pages: PdfCanvas[] = [];
-  let page = canvas();
+  let page = canvas(unicodeTypeface);
   pages.push(page);
-  let y = drawHeader(page, { brand: doc.brand, title: doc.title, subtitle: doc.subtitle, badge: doc.status }) - 22;
+  let y = drawHeader(page, {
+    brand: doc.brand,
+    title: doc.title,
+    subtitle: doc.subtitle,
+    badge: { label: doc.status, tone: doc.statusTone },
+    instance: doc.instance,
+  });
   let pageTop = y;
   let marker: Draw | null = null;
   const root: Frame = { x: MARGIN, width: CONTENT_W, color: COLORS.ink, bars: [] };
+  const measure: Measure = (value, style) => page.textWidth(value, style);
 
   function newPage() {
-    page = canvas();
+    page = canvas(unicodeTypeface);
     pages.push(page);
-    page.text(`${doc.title} · ${doc.subtitle}`, MARGIN, PAGE_H - MARGIN + 4, {
-      size: 8,
-      color: COLORS.muted,
-      maxWidth: CONTENT_W,
-    });
-    page.line(MARGIN, PAGE_H - MARGIN - 4, MARGIN + CONTENT_W, PAGE_H - MARGIN - 4, COLORS.border, 0.5);
-    y = CONTINUED_TOP;
+    y = drawRunningHeader(page, { brand: doc.brand, detail: `${doc.title} · ${doc.subtitle}` });
     pageTop = y;
   }
 
@@ -270,14 +281,14 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
   }
 
   function paragraph(runs: Run[], frame: Frame, leading = LEADING) {
-    for (const line of wrap(runs, frame.width)) {
+    for (const line of wrap(runs, frame.width, measure)) {
       row(leading, (target, top) => drawLine(target, line, frame.x, top - leading * BASELINE), frame);
     }
   }
 
   function boxed(runs: Run[], fill: PdfColor, frame: Frame = root) {
     const pad = 7;
-    const lines = wrap(runs, frame.width - pad * 2);
+    const lines = wrap(runs, frame.width - pad * 2, measure);
     lines.forEach((line, index) => {
       const first = index === 0;
       const last = index === lines.length - 1;
@@ -295,8 +306,8 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
 
   function codeBlock(value: string, frame: Frame) {
     const pad = 6;
-    const perLine = Math.max(8, Math.floor((frame.width - pad * 2) / (MONO * 0.6)));
-    const lines = codeLines(value, perLine);
+    const style = { size: MONO, font: "mono", color: COLORS.ink } satisfies Style;
+    const lines = codeLines(value, frame.width - pad * 2, (text) => measure(text, style));
     lines.forEach((text, index) => {
       const first = index === 0;
       const last = index === lines.length - 1;
@@ -306,11 +317,7 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
         (target, top) => {
           target.rect(frame.x, top - height, frame.width, height + (first ? 0 : 0.5), COLORS.surface);
           if (text) {
-            target.text(text, frame.x + pad, top - (first ? pad : 0) - MONO_LEADING * 0.75, {
-              size: MONO,
-              font: "mono",
-              color: COLORS.ink,
-            });
+            target.text(text, frame.x + pad, top - (first ? pad : 0) - MONO_LEADING * 0.75, style);
           }
         },
         frame,
@@ -321,7 +328,7 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
   function list(node: List, frame: Frame) {
     const start = node.start ?? 1;
     const style = { size: BODY, font: "regular", color: frame.color } satisfies Style;
-    const widest = node.ordered ? textWidth(`${start + node.children.length - 1}.`, style) + 6 : 0;
+    const widest = node.ordered ? measure(`${start + node.children.length - 1}.`, style) + 6 : 0;
     const indent = Math.max(INDENT, widest);
     node.children.forEach((item, index) => {
       if (index) gap(node.spread ? 5 : 2);
@@ -351,13 +358,13 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
     const natural = Array.from({ length: columns }, (_, column) =>
       Math.max(
         24,
-        ...cells.map((runs) => runs[column]!.reduce((sum, run) => sum + textWidth(run.text, run), 0)),
+        ...cells.map((runs) => runs[column]!.reduce((sum, run) => sum + measure(run.text, run), 0)),
       ) + CELL_PAD * 2,
     );
     const widths = columnWidths(natural, frame.width);
     cells.forEach((tableRow, rowIndex) => {
       const wrapped = tableRow.map((runs, column) =>
-        wrap(runs, widths[column]! - CELL_PAD * 2).slice(0, MAX_CELL_LINES),
+        wrap(runs, widths[column]! - CELL_PAD * 2, measure).slice(0, MAX_CELL_LINES),
       );
       const height = Math.max(...wrapped.map((lines) => lines.length)) * leading + CELL_PAD;
       row(
@@ -460,6 +467,7 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
         lines: wrap(
           textRuns(field.value, field.mono ? { size: 7.8, font: "mono", color: COLORS.ink } : { size: 9, font: "regular", color: COLORS.ink }),
           width,
+          measure,
         ).slice(0, MAX_FIELD_LINES),
       }));
       const height = 12 + Math.max(...cells.map((cell) => cell.lines.length)) * valueLeading + 8;
@@ -545,7 +553,13 @@ export function requestLogPdf(doc: RequestLogDocument): Uint8Array {
   }
 
   pages.forEach((target, index) => {
-    drawFooter(target, { left: doc.generated, center: doc.pageLabel(index + 1, pages.length), right: doc.brand });
+    drawFooter(target, {
+      left: doc.generated,
+      center: doc.pageLabel(index + 1, pages.length),
+      right: doc.brand,
+      instance: doc.instance,
+      edition: doc.edition,
+    });
   });
-  return pdfDocument(pages, { title: `${doc.title} · ${doc.subtitle}`, producer: doc.brand });
+  return pdfDocument(pages, { title: `${doc.title} · ${doc.subtitle}`, producer: doc.brand, subject: doc.instance });
 }
