@@ -14,6 +14,7 @@ function deploymentRow(alias: string, route: FakeRoute) {
   return {
     id: route.id,
     groupAlias: alias,
+    group: { mergeSystemMessages: false },
     kind: route.kind,
     baseUrl: `https://${route.id}.test/v1`,
     model: alias,
