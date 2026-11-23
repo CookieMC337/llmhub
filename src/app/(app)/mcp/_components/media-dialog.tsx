@@ -7,8 +7,25 @@ import FormDialog from "@/components/console/form-dialog";
 import SearchSelect from "@/components/console/search-select";
 import { useErrorToast } from "@/components/console/use-error-toast";
 import { isActionFail } from "@/lib/http/action-result";
-import type { McpMediaModel, McpServerView } from "@/types/mcp";
+import type { McpMediaKind, McpMediaModel, McpServerView } from "@/types/mcp";
 import { createMediaMcpServerAction, updateMediaMcpServerAction } from "../_action";
+
+const NONE = "none";
+const KINDS: readonly McpMediaKind[] = ["image", "speech", "video", "transcription"];
+
+type ModelPicks = Record<McpMediaKind, string>;
+
+function picksOf(server: McpServerView | null, models: McpMediaModel[]): ModelPicks {
+  if (server?.media) {
+    return {
+      image: server.media.image.model,
+      speech: server.media.speech.model,
+      video: server.media.video.model,
+      transcription: server.media.transcription.model,
+    };
+  }
+  return { image: models.find((model) => model.media)?.alias ?? "", speech: "", video: "", transcription: "" };
+}
 
 export default function MediaDialog({
   state,
@@ -25,14 +42,33 @@ export default function MediaDialog({
   const showError = useErrorToast();
   const [name, setName] = useState(editing?.name ?? "media");
   const [description, setDescription] = useState(editing?.description ?? "");
-  const [imageModel, setImageModel] = useState(editing?.imageModel ?? models.find((model) => model.media)?.alias ?? "");
+  const [picks, setPicks] = useState<ModelPicks>(() => picksOf(editing, models));
+  const [voice, setVoice] = useState(editing?.media?.speech.voice ?? "");
   const [global, setGlobal] = useState(editing?.global ?? false);
   const [pending, start] = useTransition();
   const mode = editing ? "edit" : "add";
+  const items = [
+    { id: NONE, label: t("media.none") },
+    ...models.map((model) => ({
+      id: model.alias,
+      label: model.label || model.alias,
+      detail: model.media ? t("media.mediaModel") : undefined,
+    })),
+  ];
 
   function save(close: () => void) {
     start(async () => {
-      const input = { name, description, imageModel, global, enabled: editing?.enabled ?? true };
+      const input = {
+        name,
+        description,
+        imageModel: picks.image,
+        speechModel: picks.speech,
+        speechVoice: voice,
+        videoModel: picks.video,
+        transcriptionModel: picks.transcription,
+        global,
+        enabled: editing?.enabled ?? true,
+      };
       const result = editing
         ? await updateMediaMcpServerAction({ id: editing.id, ...input })
         : await createMediaMcpServerAction(input);
@@ -49,11 +85,12 @@ export default function MediaDialog({
   return (
     <FormDialog
       state={state}
+      size="lg"
       title={t("media.title", { mode, name: editing?.name ?? "" })}
       description={t("media.description")}
       submitLabel={t("form.submit", { mode })}
       pending={pending}
-      isSubmitDisabled={!name.trim() || !imageModel}
+      isSubmitDisabled={!name.trim() || !KINDS.some((kind) => picks[kind])}
       onSubmit={save}
     >
       <TextField fullWidth isRequired value={name} onChange={setName} isDisabled={pending}>
@@ -65,19 +102,25 @@ export default function MediaDialog({
         <Label>{t("form.descriptionField")}</Label>
         <Input />
       </TextField>
-      <SearchSelect
-        label={t("media.imageModel")}
-        description={t("media.imageModelHint")}
-        placeholder={t("media.imageModelPlaceholder")}
-        items={models.map((model) => ({
-          id: model.alias,
-          label: model.label || model.alias,
-          detail: model.media ? t("media.mediaModel") : undefined,
-        }))}
-        value={imageModel}
-        onChange={setImageModel}
-        isDisabled={pending}
-      />
+      {KINDS.map((kind) => (
+        <SearchSelect
+          key={kind}
+          label={t("media.model", { kind })}
+          description={t("media.modelHint", { kind })}
+          placeholder={t("media.none")}
+          items={items}
+          value={picks[kind] || NONE}
+          onChange={(id) => setPicks((current) => ({ ...current, [kind]: id === NONE ? "" : id }))}
+          isDisabled={pending}
+        />
+      ))}
+      {picks.speech ? (
+        <TextField fullWidth value={voice} onChange={setVoice} isDisabled={pending}>
+          <Label>{t("media.voice")}</Label>
+          <Input placeholder="alloy" />
+          <Description>{t("media.voiceHint")}</Description>
+        </TextField>
+      ) : null}
       <Switch isSelected={global} onChange={setGlobal} isDisabled={pending}>
         <Switch.Content>
           <Switch.Control>

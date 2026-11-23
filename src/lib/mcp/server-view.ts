@@ -100,7 +100,7 @@ export function viewOf(row: ServerRow, canManage = true, companyId: string | nul
     oauth: oauthView(row),
     internal: row.internal,
     kind: serverKindOf(row.kind),
-    imageModel: record.kind === "media" ? record.media.image.model : "",
+    media: record.kind === "media" ? record.media : null,
     enabled: row.enabled,
     global: row.global,
     template: row.template,

@@ -169,15 +169,22 @@ export const builderDraftSchema = z.object({
   links: z.array(builderLinkSchema).max(MAX_BUILDER_LINKS).default([]),
 });
 
+const mediaModel = z.string().trim().max(200).default("");
+
 export const mediaServerSchema = z
   .object({
     name: z.string().trim().min(1).max(48),
     description: z.string().trim().max(500).default(""),
-    imageModel: z.string().trim().min(1).max(200),
+    imageModel: mediaModel,
+    speechModel: mediaModel,
+    speechVoice: z.string().trim().max(64).default(""),
+    videoModel: mediaModel,
+    transcriptionModel: mediaModel,
     enabled: z.boolean().default(true),
     global: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .refine((input) => Boolean(input.imageModel || input.speechModel || input.videoModel || input.transcriptionModel));
 
 export const hostedServerSchema = z
   .object({

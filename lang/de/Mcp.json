@@ -306,7 +306,7 @@
     "action": "{state, select, connected {Verbindung bearbeiten} paused {Verbindung bearbeiten} other {Verbinden}}"
   },
   "addChoice": "{choice, select, build {Aus API-Doku bauen} media {Medien-Tools hinzufügen} other {Server verbinden}}",
-  "addChoiceHint": "{choice, select, build {MCP Anything liest die Dokumentation einer HTTP-API und macht aus ihren Aufrufen Tools.} media {Lässt Chat-Modelle Bilder mit einem Bildmodell dieses Gateways erzeugen.} other {Füge einen laufenden MCP-Server über seine Adresse hinzu.}}",
+  "addChoiceHint": "{choice, select, build {MCP Anything liest die Dokumentation einer HTTP-API und macht aus ihren Aufrufen Tools.} media {Lässt Chat-Modelle mit Modellen dieses Gateways Bilder, Sprache und Videos erzeugen und Audio transkribieren.} other {Füge einen laufenden MCP-Server über seine Adresse hinzu.}}",
   "list": {
     "search": "Server durchsuchen",
     "filter": "Anzeigen",
@@ -326,13 +326,15 @@
   },
   "media": {
     "title": "{mode, select, edit {{name} bearbeiten} other {Medien-Tools hinzufügen}}",
-    "description": "Gibt Chat-Modellen Tools, die mit einem Modell dieses Gateways Medien erzeugen. Ergebnisse werden als Dateien gespeichert und als Links zurückgegeben, die sich 7 Tage lang ohne API-Key öffnen lassen.",
-    "imageModel": "Bildmodell",
-    "imageModelHint": "Modell, das generate_image beantwortet. Aufrufer brauchen Zugriff darauf; Nutzung und Budgets zählen für den Aufrufer.",
-    "imageModelPlaceholder": "Modell wählen",
+    "description": "Gibt Chat-Modellen Tools, die mit Modellen dieses Gateways Medien erzeugen und lesen. Wähle für jedes gewünschte Tool ein Modell; Tools ohne Modell werden nicht angeboten. Ergebnisse werden als Dateien gespeichert und als Links zurückgegeben, die sich 7 Tage lang ohne API-Key öffnen lassen.",
     "mediaModel": "Medienmodell",
     "global": "Allen anbieten",
     "globalHint": "Wenn aus, weise den Server unter Zugriff Unternehmen, Teams oder Keys zu.",
-    "badge": "Medien"
+    "badge": "Medien",
+    "model": "{kind, select, image {Bildmodell} speech {Sprachmodell} video {Videomodell} other {Transkriptionsmodell}}",
+    "modelHint": "{kind, select, image {Beantwortet generate_image.} speech {Beantwortet text_to_speech.} video {Beantwortet generate_video und get_video.} other {Beantwortet transcribe_audio.}} Aufrufer brauchen Zugriff auf das Modell; Nutzung und Budgets zählen für den Aufrufer.",
+    "none": "Keins",
+    "voice": "Standardstimme",
+    "voiceHint": "Gilt, wenn das Modell keine Stimme nennt. Leer lassen für alloy."
   }
 }

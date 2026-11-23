@@ -41,8 +41,13 @@ export type McpToolAction = "read" | "write" | "delete";
 
 export type McpServerKind = "remote" | "hosted" | "media";
 
+export type McpMediaKind = "image" | "speech" | "video" | "transcription";
+
 export type McpMediaSpec = {
   image: { model: string };
+  speech: { model: string; voice: string };
+  video: { model: string };
+  transcription: { model: string };
 };
 
 export type McpToolSpec = {
@@ -427,7 +432,7 @@ export type McpServerView = {
   oauth: McpOAuthView | null;
   internal: boolean;
   kind: McpServerKind;
-  imageModel: string;
+  media: McpMediaSpec | null;
   enabled: boolean;
   global: boolean;
   template: boolean;

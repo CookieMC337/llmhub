@@ -20,7 +20,7 @@ import { MEDIA_SERVER_URL, mediaToolSpecs } from "@/lib/mcp/media";
 import { enabledModelChoices } from "@/lib/models/aliases";
 import { BUILDER_MODEL_KEY, authUsesName, hostedServerSchema, mcpAssignmentsSchema, mcpServerInputSchema, mediaServerSchema } from "@/schemas/mcp";
 import type { Prisma } from "@/generated/prisma/client";
-import type { McpMediaModel } from "@/types/mcp";
+import type { McpMediaModel, McpMediaSpec } from "@/types/mcp";
 
 export async function loadMcpServerList() {
   const session = await requireActor();
@@ -198,12 +198,24 @@ async function mediaModelChoices(): Promise<McpMediaModel[]> {
     .sort((a, b) => Number(b.media) - Number(a.media) || a.alias.localeCompare(b.alias));
 }
 
-async function assertMediaModel(alias: string): Promise<void> {
-  if (!(await mediaModelChoices()).some((choice) => choice.alias === alias)) throw new Error("VALIDATION");
+type MediaInput = { imageModel: string; speechModel: string; speechVoice: string; videoModel: string; transcriptionModel: string };
+
+function mediaSpecOf(input: MediaInput): McpMediaSpec {
+  return {
+    image: { model: input.imageModel },
+    speech: { model: input.speechModel, voice: input.speechModel ? input.speechVoice : "" },
+    video: { model: input.videoModel },
+    transcription: { model: input.transcriptionModel },
+  };
 }
 
-function mediaFields(imageModel: string) {
-  const spec = { image: { model: imageModel } };
+async function assertMediaModels(spec: McpMediaSpec): Promise<void> {
+  const known = new Set((await mediaModelChoices()).map((choice) => choice.alias));
+  const chosen = [spec.image.model, spec.speech.model, spec.video.model, spec.transcription.model].filter(Boolean);
+  if (chosen.some((alias) => !known.has(alias))) throw new Error("VALIDATION");
+}
+
+function mediaFields(spec: McpMediaSpec) {
   return {
     spec: spec as Prisma.InputJsonValue,
     tools: mediaToolSpecs(spec) as unknown as Prisma.InputJsonValue,
@@ -214,7 +226,8 @@ function mediaFields(imageModel: string) {
 export async function createMediaMcpServer(raw: unknown) {
   const session = await requireMcpManager();
   const input = parse(mediaServerSchema, raw);
-  await assertMediaModel(input.imageModel);
+  const spec = mediaSpecOf(input);
+  await assertMediaModels(spec);
   let created: ServerRow;
   try {
     created = await prisma.mcpServer.create({
@@ -226,7 +239,7 @@ export async function createMediaMcpServer(raw: unknown) {
         internal: false,
         enabled: input.enabled,
         global: input.global,
-        ...mediaFields(input.imageModel),
+        ...mediaFields(spec),
       },
       select: serverSelect,
     });
@@ -240,7 +253,7 @@ export async function createMediaMcpServer(raw: unknown) {
     action: "mcp_server.create",
     objectType: "mcp_server",
     objectId: created.id,
-    after: { ...auditShape(created), kind: "media", imageModel: input.imageModel, global: input.global },
+    after: { ...auditShape(created), kind: "media", media: spec, global: input.global },
   });
   return { server: scopedView(await loadRow(created.id), session) };
 }
@@ -252,7 +265,8 @@ export async function updateMediaMcpServer(raw: { id: string } & Record<string, 
   const input = parse(mediaServerSchema, fields);
   const before = await loadRow(id);
   if (before.kind !== "media") throw new Error("VALIDATION");
-  await assertMediaModel(input.imageModel);
+  const spec = mediaSpecOf(input);
+  await assertMediaModels(spec);
   let updated: ServerRow;
   try {
     updated = await prisma.mcpServer.update({
@@ -262,7 +276,7 @@ export async function updateMediaMcpServer(raw: { id: string } & Record<string, 
         description: input.description,
         enabled: input.enabled,
         global: input.global,
-        ...mediaFields(input.imageModel),
+        ...mediaFields(spec),
       },
       select: serverSelect,
     });
@@ -277,7 +291,7 @@ export async function updateMediaMcpServer(raw: { id: string } & Record<string, 
     objectType: "mcp_server",
     objectId: id,
     before: auditShape(before),
-    after: { ...auditShape(updated), imageModel: input.imageModel },
+    after: { ...auditShape(updated), media: spec },
   });
   return { server: scopedView(updated, session) };
 }

@@ -306,7 +306,7 @@
     "action": "{state, select, connected {Edit connection} paused {Edit connection} other {Connect}}"
   },
   "addChoice": "{choice, select, build {Build from API docs} media {Add media tools} other {Connect server}}",
-  "addChoiceHint": "{choice, select, build {MCP Anything reads the documentation of any HTTP API and turns its calls into tools.} media {Lets chat models create images with an image model on this gateway.} other {Add an MCP server that already runs, by its address.}}",
+  "addChoiceHint": "{choice, select, build {MCP Anything reads the documentation of any HTTP API and turns its calls into tools.} media {Lets chat models create images, speech, and videos and transcribe audio with models on this gateway.} other {Add an MCP server that already runs, by its address.}}",
   "list": {
     "search": "Search servers",
     "filter": "Show",
@@ -326,13 +326,15 @@
   },
   "media": {
     "title": "{mode, select, edit {Edit {name}} other {Add media tools}}",
-    "description": "Gives chat models tools that create media with a model on this gateway. Results are stored as files and returned as links that open without an API key for 7 days.",
-    "imageModel": "Image model",
-    "imageModelHint": "Model that answers generate_image. Callers need access to it; usage and budgets count for the caller.",
-    "imageModelPlaceholder": "Choose a model",
+    "description": "Gives chat models tools that create and read media with models on this gateway. Pick a model for each tool you want; tools without a model are not offered. Results are stored as files and returned as links that open without an API key for 7 days.",
     "mediaModel": "Media model",
     "global": "Offer to everyone",
     "globalHint": "When off, assign the server to companies, teams, or keys under Access.",
-    "badge": "Media"
+    "badge": "Media",
+    "model": "{kind, select, image {Image model} speech {Speech model} video {Video model} other {Transcription model}}",
+    "modelHint": "{kind, select, image {Answers generate_image.} speech {Answers text_to_speech.} video {Answers generate_video and get_video.} other {Answers transcribe_audio.}} Callers need access to the model; usage and budgets count for the caller.",
+    "none": "None",
+    "voice": "Default voice",
+    "voiceHint": "Used when the model does not name a voice. Leave empty for alloy."
   }
 }

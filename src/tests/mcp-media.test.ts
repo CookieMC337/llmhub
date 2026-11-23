@@ -4,23 +4,38 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { MCP_PROTOCOL_VERSION } from "@/lib/mcp/client";
 import {
+  callMedia,
   GENERATE_IMAGE_TOOL,
+  GENERATE_VIDEO_TOOL,
+  GET_VIDEO_TOOL,
   MEDIA_LINK_TTL_MS,
   MEDIA_SERVER_URL,
   mediaLink,
   mediaLinkValid,
   mediaSpec,
   mediaToolSpecs,
+  TEXT_TO_SPEECH_TOOL,
+  TRANSCRIBE_AUDIO_TOOL,
 } from "@/lib/mcp/media";
-import type { JsonMap } from "@/types/gateway";
+import type { JsonMap, Principal } from "@/types/gateway";
+import type { McpMediaSpec } from "@/types/mcp";
 
 const IMAGE_MODEL = "image-test";
+const SPEECH_MODEL = "tts-test";
+const VIDEO_MODEL = "video-test";
+const STT_MODEL = "stt-test";
+const FULL_SPEC = {
+  image: { model: IMAGE_MODEL },
+  speech: { model: SPEECH_MODEL, voice: "nova" },
+  video: { model: VIDEO_MODEL },
+  transcription: { model: STT_MODEL },
+};
 const PIXEL = Buffer.from("fake-png-bytes");
 
 type StoredRow = JsonMap & { id: string; payload: Uint8Array | null };
 
-function mediaServerRow(model = IMAGE_MODEL) {
-  const spec = { image: { model } };
+function mediaServerRow(raw: JsonMap = FULL_SPEC) {
+  const spec = mediaSpec(raw);
   return {
     id: "media1",
     name: "media",
@@ -51,7 +66,7 @@ function mediaServerRow(model = IMAGE_MODEL) {
 
 function setup(reply: (call: UpstreamCall) => Response) {
   resetGateway();
-  gateway.groups.set(IMAGE_MODEL, groupRow(IMAGE_MODEL));
+  for (const model of [IMAGE_MODEL, SPEECH_MODEL, VIDEO_MODEL, STT_MODEL]) gateway.groups.set(model, groupRow(model));
   gateway.reply = reply;
   const stored: StoredRow[] = [];
   recordedPrisma.handlers = {
@@ -63,9 +78,32 @@ function setup(reply: (call: UpstreamCall) => Response) {
         return row;
       },
       findUnique: ({ where }: { where: { id: string } }) => stored.find((row) => row.id === where.id) ?? null,
+      update: ({ where, data }: { where: { id: string }; data: JsonMap }) => {
+        const row = stored.find((item) => item.id === where.id);
+        if (row) Object.assign(row, data);
+        return row;
+      },
     },
   };
   return stored;
+}
+
+async function toolNames(): Promise<Map<string, string>> {
+  const listed = await hub({ method: "tools/list" });
+  const names = ((listed.result as JsonMap).tools as JsonMap[]).map((tool) => String(tool.name));
+  return new Map(names.map((name) => [name.replace(/^.*?(generate_image|text_to_speech|generate_video|get_video|transcribe_audio)$/, "$1"), name]));
+}
+
+async function callTool(tool: string, args: JsonMap): Promise<{ isError: boolean; text: string; json: JsonMap }> {
+  const name = (await toolNames()).get(tool) ?? tool;
+  const result = (await hub({ method: "tools/call", params: { name, arguments: args } })).result as JsonMap;
+  const text = String(((result.content as JsonMap[])[0] as JsonMap).text);
+  return { isError: result.isError === true, text, json: (JSON.parse(text.startsWith("{") ? text : "{}") as JsonMap) };
+}
+
+async function download(url: string, id: string): Promise<Response> {
+  const { GET } = await import("@/app/api/media/[id]/route");
+  return GET(new Request(url), { params: Promise.resolve({ id }) });
 }
 
 async function hub(body: JsonMap): Promise<JsonMap> {
@@ -80,12 +118,19 @@ function imageReply(call: UpstreamCall): Response {
   return Response.json({ created: 1, data: [{ b64_json: PIXEL.toString("base64"), revised_prompt: "a red fox" }] });
 }
 
-test("media servers list generate_image only when an image model is set", () => {
+test("media servers offer only the tools that have a model", () => {
   assert.deepEqual(mediaToolSpecs(mediaSpec({})), []);
-  assert.deepEqual(mediaSpec({ image: { model: " img " } }), { image: { model: "img" } });
-  const [tool] = mediaToolSpecs(mediaSpec({ image: { model: "img" } }));
-  assert.equal(tool?.name, GENERATE_IMAGE_TOOL);
-  assert.deepEqual((tool?.inputSchema as JsonMap).required, ["prompt"]);
+  assert.deepEqual(mediaSpec({ image: { model: " img " } }), {
+    image: { model: "img" },
+    speech: { model: "", voice: "" },
+    video: { model: "" },
+    transcription: { model: "" },
+  });
+  const names = (spec: JsonMap) => mediaToolSpecs(mediaSpec(spec)).map((tool) => tool.name);
+  assert.deepEqual(names({ image: { model: "img" } }), [GENERATE_IMAGE_TOOL]);
+  assert.deepEqual(names({ video: { model: "v" } }), [GENERATE_VIDEO_TOOL, GET_VIDEO_TOOL]);
+  assert.deepEqual(names(FULL_SPEC), [GENERATE_IMAGE_TOOL, TEXT_TO_SPEECH_TOOL, GENERATE_VIDEO_TOOL, GET_VIDEO_TOOL, TRANSCRIBE_AUDIO_TOOL]);
+  for (const tool of mediaToolSpecs(mediaSpec(FULL_SPEC))) assert.equal((tool.inputSchema as JsonMap).type, "object", tool.name);
 });
 
 test("media links verify their signature and expire", () => {
@@ -105,12 +150,11 @@ test("media links verify their signature and expire", () => {
 
 test("generate_image runs the image model as the caller and returns a working link", async () => {
   const stored = setup(imageReply);
-  const listed = await hub({ method: "tools/list" });
-  const names = ((listed.result as JsonMap).tools as JsonMap[]).map((tool) => tool.name);
-  assert.equal(names.length, 1);
-  assert.match(String(names[0]), /generate_image/);
+  const names = [...(await toolNames()).values()];
+  assert.equal(names.length, 5);
+  const image = (await toolNames()).get(GENERATE_IMAGE_TOOL);
 
-  const called = await hub({ method: "tools/call", params: { name: names[0], arguments: { prompt: "a fox", size: "1024x1024", count: 9 } } });
+  const called = await hub({ method: "tools/call", params: { name: image, arguments: { prompt: "a fox", size: "1024x1024", count: 9 } } });
   const result = called.result as JsonMap;
   assert.equal(result.isError, false);
   const upstream = gateway.upstream.find((call) => call.url.endsWith("/images/generations"));
@@ -139,13 +183,13 @@ test("generate_image runs the image model as the caller and returns a working li
 
 test("generate_image reports missing prompts and upstream failures as tool errors", async () => {
   setup(() => Response.json({ error: { message: "content policy" } }, { status: 400 }));
-  const name = String((((await hub({ method: "tools/list" })).result as JsonMap).tools as JsonMap[])[0]?.name);
+  const name = (await toolNames()).get(GENERATE_IMAGE_TOOL);
   const empty = (await hub({ method: "tools/call", params: { name, arguments: { prompt: " " } } })).result as JsonMap;
   assert.equal(empty.isError, true);
   assert.equal(gateway.upstream.length, 0);
   const failed = (await hub({ method: "tools/call", params: { name, arguments: { prompt: "a fox" } } })).result as JsonMap;
   assert.equal(failed.isError, true);
-  assert.match(String(((failed.content as JsonMap[])[0] as JsonMap).text), /Image generation failed/);
+  assert.match(String(((failed.content as JsonMap[])[0] as JsonMap).text), /generate_image failed/);
 });
 
 test("the media download route refuses unsigned requests before reading data", async () => {
@@ -154,4 +198,110 @@ test("the media download route refuses unsigned requests before reading data", a
   const res = await GET(new Request("https://hub.test/api/media/obj1"), { params: Promise.resolve({ id: "obj1" }) });
   assert.equal(res.status, 403);
   assert.equal(recordedPrisma.called("storedObject").length, 0);
+});
+
+test("text_to_speech stores the audio and uses the configured voice", async () => {
+  const stored = setup((call) =>
+    call.url.endsWith("/audio/speech") ? new Response(PIXEL, { headers: { "content-type": "audio/mpeg" } }) : Response.json({}),
+  );
+  const result = await callTool(TEXT_TO_SPEECH_TOOL, { text: "Hallo Welt" });
+  assert.equal(result.isError, false, result.text);
+  const upstream = gateway.upstream.find((call) => call.url.endsWith("/audio/speech"));
+  assert.equal(upstream?.body?.model, SPEECH_MODEL);
+  assert.equal(upstream?.body?.input, "Hallo Welt");
+  assert.equal(upstream?.body?.voice, "nova");
+  assert.equal(upstream?.body?.response_format, "mp3");
+  const audio = result.json.audio as JsonMap;
+  assert.equal(stored[0]?.filename, "speech.mp3");
+  const res = await download(String(audio.url), String(audio.file_id));
+  assert.equal(res.headers.get("content-type"), "audio/mpeg");
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), PIXEL);
+  const tooLong = await callTool(TEXT_TO_SPEECH_TOOL, { text: "x".repeat(5000) });
+  assert.equal(tooLong.isError, true);
+});
+
+test("videos start, report progress, and become a stored download once", async () => {
+  let status = "in_progress";
+  const stored = setup((call) => {
+    if (call.url.endsWith("/videos") && call.body) return Response.json({ id: "vid_up", object: "video", status: "queued" });
+    if (call.url.endsWith("/videos/vid_up")) return Response.json({ id: "vid_up", status, progress: status === "completed" ? 100 : 40 });
+    if (call.url.endsWith("/videos/vid_up/content")) return new Response(PIXEL, { headers: { "content-type": "video/mp4" } });
+    return Response.json({});
+  });
+  const started = await callTool(GENERATE_VIDEO_TOOL, { prompt: "a fox running", seconds: "4", size: "1280x720" });
+  assert.equal(started.isError, false, started.text);
+  const start = gateway.upstream.find((call) => call.url.endsWith("/videos"));
+  assert.equal(start?.body?.model, VIDEO_MODEL);
+  assert.equal(start?.body?.seconds, "4");
+  const videoId = String(started.json.video_id);
+  assert.equal(stored.find((row) => row.id === videoId)?.kind, "video");
+
+  const pending = await callTool(GET_VIDEO_TOOL, { video_id: videoId });
+  assert.equal(pending.isError, false);
+  assert.equal(pending.json.status, "in_progress");
+  assert.equal(pending.json.progress, 40);
+  assert.equal(pending.json.video, undefined);
+
+  status = "completed";
+  const done = await callTool(GET_VIDEO_TOOL, { video_id: videoId });
+  const video = done.json.video as JsonMap;
+  assert.equal(done.json.status, "completed");
+  const res = await download(String(video.url), String(video.file_id));
+  assert.equal(res.headers.get("content-type"), "video/mp4");
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), PIXEL);
+
+  const contentCalls = gateway.upstream.filter((call) => call.url.endsWith("/content")).length;
+  const again = await callTool(GET_VIDEO_TOOL, { video_id: videoId });
+  assert.equal((again.json.video as JsonMap).file_id, video.file_id);
+  assert.equal(gateway.upstream.filter((call) => call.url.endsWith("/content")).length, contentCalls);
+
+  status = "failed";
+  const missing = await callTool(GET_VIDEO_TOOL, { video_id: "nope" });
+  assert.equal(missing.isError, true);
+});
+
+test("transcribe_audio reads own files and media links and refuses private urls", async () => {
+  const stored = setup((call) =>
+    call.url.endsWith("/audio/transcriptions") ? Response.json({ text: "Hallo Welt", language: "de" }) : new Response(PIXEL, { headers: { "content-type": "audio/mpeg" } }),
+  );
+  const speech = await callTool(TEXT_TO_SPEECH_TOOL, { text: "Hallo Welt" });
+  const audio = speech.json.audio as JsonMap;
+
+  const fromLink = await callTool(TRANSCRIBE_AUDIO_TOOL, { url: audio.url, language: "de" });
+  assert.equal(fromLink.isError, false, fromLink.text);
+  assert.deepEqual(fromLink.json, { text: "Hallo Welt", language: "de" });
+  const fromFile = await callTool(TRANSCRIBE_AUDIO_TOOL, { file_id: audio.file_id });
+  assert.equal(fromFile.json.text, "Hallo Welt");
+
+  stored[0]!.owner = "someone-else";
+  assert.equal((await callTool(TRANSCRIBE_AUDIO_TOOL, { file_id: audio.file_id })).isError, true);
+  assert.equal((await callTool(TRANSCRIBE_AUDIO_TOOL, {})).isError, true);
+  const blocked = await callTool(TRANSCRIBE_AUDIO_TOOL, { url: "http://127.0.0.1/secret.mp3" });
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.text, /cannot be fetched/);
+});
+
+test("transcribe_audio fetches public urls with a size limit", async () => {
+  setup((call) => (call.url.endsWith("/audio/transcriptions") ? Response.json({ text: "hi" }) : Response.json({})));
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/mcp", {}));
+  const spec: McpMediaSpec = mediaSpec(FULL_SPEC);
+  const fetched: string[] = [];
+  const small = async (url: string) => {
+    fetched.push(url);
+    return new Response(PIXEL, { headers: { "content-type": "audio/wav" } });
+  };
+  const big = async () => new Response(PIXEL, { headers: { "content-length": String(26 * 1024 * 1024) } });
+  const ok = await callMedia(spec, TRANSCRIBE_AUDIO_TOOL, { url: "https://cdn.example.com/a.wav" }, principal, small);
+  assert.equal(ok.isError, false, ok.text);
+  assert.deepEqual(fetched, ["https://cdn.example.com/a.wav"]);
+  const tooBig = await callMedia(spec, TRANSCRIBE_AUDIO_TOOL, { url: "https://cdn.example.com/b.wav" }, principal, big);
+  assert.equal(tooBig.isError, true);
+  assert.match(tooBig.text, /25 MB/);
+});
+
+test("media tools without a configured model are refused", async () => {
+  const outcome = await callMedia(mediaSpec({ image: { model: IMAGE_MODEL } }), TEXT_TO_SPEECH_TOOL, { text: "hi" }, {} as Principal);
+  assert.equal(outcome.isError, true);
+  assert.equal(await callMedia(mediaSpec(FULL_SPEC), GENERATE_IMAGE_TOOL, {}, null).then((o) => o.isError), true);
 });
