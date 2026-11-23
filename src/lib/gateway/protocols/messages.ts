@@ -501,8 +501,9 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
 
   private close(): string[] {
     if (this.open === null) return [];
+    const closed = this.open;
     const out: string[] = [];
-    if (this.open === "thinking") {
+    if (closed === "thinking") {
       out.push(
         sseEvent("content_block_delta", {
           type: "content_block_delta",
@@ -514,6 +515,7 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
     }
     this.open = null;
     out.push(sseEvent("content_block_stop", { type: "content_block_stop", index: this.index }));
+    if (closed === "tool_use") out.push(...this.release());
     return out;
   }
 
@@ -628,7 +630,6 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
   private tool(event: ToolCallEvent): string[] {
     if (event.type === "start") {
       const out = this.close();
-      out.push(...this.release());
       this.index += 1;
       this.open = "tool_use";
       this.hasTools = true;
@@ -679,7 +680,6 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
     const out: string[] = [];
     for (const event of this.deltas.flush()) out.push(...this.tool(event));
     out.push(...this.close());
-    out.push(...this.release());
     const matched = this.reason === "stop" ? this.matched : null;
     const stopReason = stopReasonFromFinish(this.reason, this.hasTools, matched);
     const usage = anthropicUsageFromChat(this.usage);
