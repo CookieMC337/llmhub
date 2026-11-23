@@ -14,10 +14,12 @@ import {
   mediaLinkValid,
   mediaSpec,
   mediaToolSpecs,
+  mediaType,
   TEXT_TO_SPEECH_TOOL,
   TRANSCRIBE_AUDIO_TOOL,
 } from "@/lib/mcp/media";
 import type { JsonMap, Principal } from "@/types/gateway";
+import type { KeyEndpoint } from "@/types/keys";
 import type { McpMediaSpec } from "@/types/mcp";
 
 const IMAGE_MODEL = "image-test";
@@ -304,4 +306,65 @@ test("media tools without a configured model are refused", async () => {
   const outcome = await callMedia(mediaSpec({ image: { model: IMAGE_MODEL } }), TEXT_TO_SPEECH_TOOL, { text: "hi" }, {} as Principal);
   assert.equal(outcome.isError, true);
   assert.equal(await callMedia(mediaSpec(FULL_SPEC), GENERATE_IMAGE_TOOL, {}, null).then((o) => o.isError), true);
+});
+
+async function bookedLogs(count: number) {
+  for (let wait = 0; wait < 400 && recordedPrisma.called("requestLog", "create").length < count; wait++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return recordedPrisma.called("requestLog", "create").map((call) => (call.args as { data: JsonMap }).data);
+}
+
+test("transcribe_audio checks ownership of file_id even when a valid media link is passed too", async () => {
+  const stored = setup((call) =>
+    call.url.endsWith("/audio/transcriptions") ? Response.json({ text: "secret" }) : new Response(PIXEL, { headers: { "content-type": "audio/mpeg" } }),
+  );
+  const own = (await callTool(TEXT_TO_SPEECH_TOOL, { text: "mine" })).json.audio as JsonMap;
+  const other = (await callTool(TEXT_TO_SPEECH_TOOL, { text: "theirs" })).json.audio as JsonMap;
+  stored.find((row) => row.id === other.file_id)!.owner = "someone-else";
+  const before = gateway.upstream.filter((call) => call.url.endsWith("/audio/transcriptions")).length;
+  const mixed = await callTool(TRANSCRIBE_AUDIO_TOOL, { file_id: other.file_id, url: own.url });
+  assert.equal(mixed.isError, true);
+  assert.equal(gateway.upstream.filter((call) => call.url.endsWith("/audio/transcriptions")).length, before);
+  const broken = await callTool(TRANSCRIBE_AUDIO_TOOL, { url: String(own.url).replace(/\/api\/media\/[^?]+/, "/api/media/%E0%A4%A") });
+  assert.equal(broken.isError, true);
+});
+
+test("media tools keep the caller's trace intact and log under their own endpoint", async () => {
+  setup(imageReply);
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/chat/completions", {}));
+  const outer = principal.trace!;
+  outer.request = { model: "chat", messages: [] };
+  const outcome = await callMedia(mediaSpec(FULL_SPEC), GENERATE_IMAGE_TOOL, { prompt: "a fox" }, principal);
+  assert.equal(outcome.isError, false, outcome.text);
+  assert.equal(principal.trace, outer);
+  assert.deepEqual(outer.request, { model: "chat", messages: [] });
+  assert.equal(outer.endpoint, "/api/v1/chat/completions");
+  const [log] = await bookedLogs(1);
+  assert.equal(log?.endpoint, "/api/v1/images/generations");
+  assert.equal(log?.model, IMAGE_MODEL);
+});
+
+test("media tools respect the key's endpoint allow list", async () => {
+  setup(imageReply);
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/chat/completions", {}));
+  const allowed: KeyEndpoint[] = ["chat", "images", "mcp"];
+  const limited = { ...principal, key: { ...principal.key!, allowed_endpoints: allowed } };
+  const speech = await callMedia(mediaSpec(FULL_SPEC), TEXT_TO_SPEECH_TOOL, { text: "hi" }, limited);
+  assert.equal(speech.isError, true);
+  assert.match(speech.text, /endpoint not allowed/);
+  assert.equal(gateway.upstream.some((call) => call.url.endsWith("/audio/speech")), false);
+  const image = await callMedia(mediaSpec(FULL_SPEC), GENERATE_IMAGE_TOOL, { prompt: "a fox" }, limited);
+  assert.equal(image.isError, false, image.text);
+});
+
+test("stored media types come only from valid audio and video tokens", () => {
+  assert.equal(mediaType("audio/mpeg; charset=binary", "audio/", "audio/wav"), "audio/mpeg");
+  assert.equal(mediaType("video/MP4", "video/", "video/webm"), "video/mp4");
+  assert.equal(mediaType("text/html", "audio/", "audio/mpeg"), "audio/mpeg");
+  assert.equal(mediaType("audio/<script>", "audio/", "audio/mpeg"), "audio/mpeg");
+  assert.equal(mediaType("video/mp4", "audio/", "audio/mpeg"), "audio/mpeg");
+  assert.equal(mediaType("", "video/", "video/mp4"), "video/mp4");
 });

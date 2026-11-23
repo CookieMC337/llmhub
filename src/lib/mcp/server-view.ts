@@ -71,7 +71,8 @@ function statusOf(row: Pick<ServerRow, "enabled" | "lastError" | "refreshedAt" |
 }
 
 function shownUrl(url: string): string {
-  return URL.canParse(url) ? new URL(url).origin : "";
+  const origin = URL.canParse(url) ? new URL(url).origin : "";
+  return origin === "null" ? "" : origin;
 }
 
 function oauthView(row: ServerRow): McpOAuthView | null {
@@ -90,7 +91,7 @@ export function viewOf(row: ServerRow, canManage = true, companyId: string | nul
     id: row.id,
     name: row.name,
     description: row.description,
-    url: canManage ? row.url : shownUrl(row.url),
+    url: record.kind === "media" ? "" : canManage ? row.url : shownUrl(row.url),
     authType: record.authType,
     authHeader: row.authHeader,
     hasSecret: Boolean(row.authSecret),

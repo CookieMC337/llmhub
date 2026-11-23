@@ -299,10 +299,10 @@ export async function updateMediaMcpServer(raw: { id: string } & Record<string, 
 export async function updateMcpServer(raw: { id: string } & Record<string, unknown>) {
   const session = await requireMcpManager();
   if (!raw?.id || typeof raw.id !== "string") throw new Error("MISSING_ID");
-  if ((await loadRow(raw.id)).kind === "media") throw new Error("VALIDATION");
+  const before = await loadRow(raw.id);
+  if (before.kind === "media") throw new Error("VALIDATION");
   const input = parse(mcpServerInputSchema, raw);
   assertUrl(input.url, input.internal);
-  const before = await loadRow(raw.id);
   if (before.kind === "hosted") {
     if (input.authType === "oauth") throw new Error("VALIDATION");
     const authSecret = secretFor(input.authType, input, before.authSecret);
