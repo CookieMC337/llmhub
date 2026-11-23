@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Alert, Button, CloseButton, useOverlayState } from "@heroui/react";
-import { Blocks, Plug, Sparkles } from "lucide-react";
+import { Blocks, ImagePlus, Plug, Sparkles } from "lucide-react";
 import { useTranslations } from "next-intl";
 import EmptyState from "@/components/console/empty-state";
 import PageHeader from "@/components/console/page-header";
@@ -122,6 +122,10 @@ export default function McpPage() {
                 <Button variant="secondary" onPress={() => add("build")}>
                   <Sparkles size={16} aria-hidden />
                   {t("addChoice", { choice: "build" })}
+                </Button>
+                <Button variant="secondary" onPress={() => add("media")}>
+                  <ImagePlus size={16} aria-hidden />
+                  {t("addChoice", { choice: "media" })}
                 </Button>
                 <Button onPress={() => add("connect")}>
                   <Plug size={16} aria-hidden />
