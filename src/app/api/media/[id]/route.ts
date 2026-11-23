@@ -20,6 +20,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
         "Content-Type": object.contentType || "application/octet-stream",
         "Cache-Control": "private, max-age=3600",
         "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
         "Content-Disposition": `inline; filename="${object.filename.replace(/[^\w.-]/g, "_") || "media"}"`,
       },
     });

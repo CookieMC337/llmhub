@@ -78,7 +78,7 @@ export default function ServerActions({
   const { canManage, canInstall, canAssign, companyId } = flags;
   const browserSignIn = server.authType === "oauth" && server.oauthGrant === "authorization_code";
   const signedIn = server.oauth?.status === "active";
-  const canConnect = canInstall && (server.template || canManage);
+  const canConnect = canInstall && server.kind !== "media" && (server.template || canManage);
   const needsSignIn = canManage && browserSignIn && !signedIn;
   const needsKey = Boolean(canConnect && companyId && server.template && !companyConnected(server, companyId));
 

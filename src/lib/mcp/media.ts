@@ -2,7 +2,10 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { signingSecret } from "@/lib/crypto";
 import { env } from "@/lib/env";
-import { allowModel, applyGuardrails, modelChain } from "@/lib/gateway/access/gate";
+import { allowEndpoint, allowModel, applyGuardrails, modelChain, withTrace } from "@/lib/gateway/access/gate";
+import { gatewayPath } from "@/lib/gateway/api-paths";
+import { assertBudget } from "@/lib/gateway/billing/billing";
+import { capRequestCost } from "@/lib/gateway/billing/cost-cap";
 import { usageFromUnknown } from "@/lib/gateway/billing/billing";
 import { meter } from "@/lib/gateway/billing/meter";
 import { estimateTokens } from "@/lib/gateway/billing/tokens";
@@ -16,7 +19,7 @@ import { logger } from "@/lib/logging/logger";
 import { McpError } from "@/lib/mcp/errors";
 import { guardedFetch } from "@/lib/mcp/transport";
 import { parseJsonOrNull } from "@/lib/utils/json";
-import type { JsonMap, Principal } from "@/types/gateway";
+import type { JsonMap, Principal, StoredObjectRecord } from "@/types/gateway";
 import type { McpFetch, McpMediaKind, McpMediaSpec, McpToolOutcome, McpToolSpec } from "@/types/mcp";
 
 export const MEDIA_SERVER_URL = "llmhub:media";
@@ -46,6 +49,7 @@ const AUDIO_TYPES: Record<string, string> = {
   flac: "audio/flac",
 };
 const VIDEO_DONE = "completed";
+const MEDIA_TYPE = /^(?:audio|video)\/[a-z0-9][a-z0-9.+-]{0,63}$/;
 const VIDEO_FAILED = new Set(["failed", "cancelled", "expired"]);
 const LINK_NOTE = "Links open without an API key and expire after 7 days.";
 
@@ -190,8 +194,16 @@ function mediaIdOfLink(raw: string): string | null {
   const own = new URL(env.NEXT_PUBLIC_APP_URL);
   const match = /^\/api\/media\/([^/]+)$/.exec(url.pathname);
   if (url.origin !== own.origin || !match?.[1]) return null;
-  const id = decodeURIComponent(match[1]);
-  return mediaLinkValid(id, url.searchParams.get("expires"), url.searchParams.get("signature")) ? id : null;
+  const id = decodedSegment(match[1]);
+  return id && mediaLinkValid(id, url.searchParams.get("expires"), url.searchParams.get("signature")) ? id : null;
+}
+
+function decodedSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
 }
 
 function text(args: JsonMap, key: string, max: number): string {
@@ -249,6 +261,11 @@ async function metered<T extends Parameters<Meter["ok"]>[0] & { json?: unknown }
   }
 }
 
+export function mediaType(header: string, family: "audio/" | "video/", fallback: string): string {
+  const type = (header.split(";")[0] ?? "").trim().toLowerCase();
+  return type.startsWith(family) && MEDIA_TYPE.test(type) ? type : fallback;
+}
+
 function success(payload: JsonMap): McpToolOutcome {
   return { text: JSON.stringify(payload), isError: false };
 }
@@ -302,7 +319,7 @@ async function textToSpeech({ spec, args, principal }: MediaContext): Promise<Mc
     () => forwardToModel(aliases, principal, "/audio/speech", clean, { binary: true }),
     () => ({ prompt_tokens: estimateTokens(input) }),
   );
-  const contentType = hit.contentType.startsWith("audio/") ? hit.contentType.split(";")[0]! : AUDIO_TYPES[format]!;
+  const contentType = mediaType(hit.contentType, "audio/", AUDIO_TYPES[format]!);
   const audio = await storeMedia(principal, model, { filename: `speech.${format}`, contentType, payload: hit.raw });
   return success({ audio, note: `Give the url to the user as a link. ${LINK_NOTE}` });
 }
@@ -348,7 +365,7 @@ async function getVideo({ args, principal }: MediaContext): Promise<McpToolOutco
     return done ? failure(JSON.stringify(videoView(json, id))) : success({ ...videoView(json, id), note: "Not ready yet. Check again later." });
   }
   const content = await forwardToModel([model], principal, `/videos/${upstreamId}/content`, null, { method: "GET", binary: true });
-  const contentType = content.contentType.startsWith("video/") ? content.contentType.split(";")[0]! : "video/mp4";
+  const contentType = mediaType(content.contentType, "video/", "video/mp4");
   const video = await storeMedia(principal, model, { filename: "video.mp4", contentType, payload: content.raw });
   await refreshVideo(id, { ...json, media_file: { file_id: video.file_id, content_type: contentType } });
   return success({ ...videoView(json, id), video, note: `Give the url to the user as a link. ${LINK_NOTE}` });
@@ -374,17 +391,24 @@ async function readLimited(res: Response): Promise<Uint8Array> {
   return Buffer.concat(parts);
 }
 
+function storedAudio(object: StoredObjectRecord): { payload: Uint8Array; filename: string; contentType: string } {
+  if (object.bytes > MAX_AUDIO_BYTES) throw new ToolInputError("The audio file is larger than 25 MB.");
+  return { payload: object.payload, filename: object.filename || "audio", contentType: object.contentType || "application/octet-stream" };
+}
+
 async function audioSource(ctx: MediaContext): Promise<{ payload: Uint8Array; filename: string; contentType: string }> {
   const fileId = text(ctx.args, "file_id", 200);
   const url = text(ctx.args, "url", 4096);
+  if (fileId) {
+    const object = await getObject(fileId);
+    if (object?.kind !== "file" || !canReadObject(object, ctx.principal)) throw new ToolInputError("File not found.");
+    return storedAudio(object);
+  }
   const linked = url ? mediaIdOfLink(url) : null;
-  const objectId = fileId || linked;
-  if (objectId) {
-    const object = await getObject(objectId);
-    const readable = object?.kind === "file" && (linked ? isMediaObject(object.meta, object.purpose) : canReadObject(object, ctx.principal));
-    if (!object || !readable) throw new ToolInputError("File not found.");
-    if (object.bytes > MAX_AUDIO_BYTES) throw new ToolInputError("The audio file is larger than 25 MB.");
-    return { payload: object.payload, filename: object.filename || "audio", contentType: object.contentType || "application/octet-stream" };
+  if (linked) {
+    const object = await getObject(linked);
+    if (object?.kind !== "file" || !isMediaObject(object.meta, object.purpose)) throw new ToolInputError("File not found.");
+    return storedAudio(object);
   }
   if (!url) throw new ToolInputError("Pass url or file_id.");
   let res: Response;
@@ -425,13 +449,22 @@ async function transcribeAudio(ctx: MediaContext): Promise<McpToolOutcome> {
   return success({ text: transcript, ...(typeof json?.language === "string" ? { language: json.language } : {}) });
 }
 
-const HANDLERS: Record<string, { kind: McpMediaKind; run: (ctx: MediaContext) => Promise<McpToolOutcome> }> = {
-  [GENERATE_IMAGE_TOOL]: { kind: "image", run: generateImage },
-  [TEXT_TO_SPEECH_TOOL]: { kind: "speech", run: textToSpeech },
-  [GENERATE_VIDEO_TOOL]: { kind: "video", run: generateVideo },
-  [GET_VIDEO_TOOL]: { kind: "video", run: getVideo },
-  [TRANSCRIBE_AUDIO_TOOL]: { kind: "transcription", run: transcribeAudio },
+type MediaHandler = { kind: McpMediaKind; endpoint: string; run: (ctx: MediaContext) => Promise<McpToolOutcome> };
+
+const HANDLERS: Record<string, MediaHandler> = {
+  [GENERATE_IMAGE_TOOL]: { kind: "image", endpoint: "/api/v1/images/generations", run: generateImage },
+  [TEXT_TO_SPEECH_TOOL]: { kind: "speech", endpoint: "/api/v1/audio/speech", run: textToSpeech },
+  [GENERATE_VIDEO_TOOL]: { kind: "video", endpoint: "/api/v1/videos", run: generateVideo },
+  [GET_VIDEO_TOOL]: { kind: "video", endpoint: "/api/v1/videos", run: getVideo },
+  [TRANSCRIBE_AUDIO_TOOL]: { kind: "transcription", endpoint: "/api/v1/audio/transcriptions", run: transcribeAudio },
 };
+
+async function mediaPrincipal(caller: Principal, endpoint: string): Promise<Principal> {
+  const principal: Principal = { ...withTrace(caller, endpoint), pool: "api" };
+  allowEndpoint(principal, gatewayPath(endpoint));
+  capRequestCost(principal, await assertBudget(principal), null);
+  return principal;
+}
 
 export async function callMedia(
   spec: McpMediaSpec,
@@ -444,7 +477,7 @@ export async function callMedia(
   const handler = HANDLERS[tool];
   if (!handler || !spec[handler.kind].model) return failure(`Unknown tool ${tool}.`);
   try {
-    return await handler.run({ spec, args, principal, fetchAudio });
+    return await handler.run({ spec, args, principal: await mediaPrincipal(principal, handler.endpoint), fetchAudio });
   } catch (err) {
     if (err instanceof ToolInputError) return failure(err.message);
     if (err instanceof GateError) return failure(`${tool} failed: ${err.message}`);
