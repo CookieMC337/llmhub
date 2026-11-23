@@ -57,6 +57,45 @@ test("a lone late system message moves to the front and empty ones drop", () => 
   ]);
   const empty: JsonMap = { messages: [{ role: "user", content: "hi" }, { role: "system", content: "" }] };
   assert.deepEqual(withSingleLeadingSystem(empty).messages, [{ role: "user", content: "hi" }]);
+  const emptyLeading: JsonMap = { messages: [{ role: "system", content: "" }, { role: "user", content: "hi" }] };
+  const dropped = withSingleLeadingSystem(emptyLeading);
+  assert.notEqual(dropped, emptyLeading);
+  assert.deepEqual(dropped.messages, [{ role: "user", content: "hi" }]);
+});
+
+test("developer messages and array-content leading system messages normalize to a single string system message", () => {
+  const dev: JsonMap = { messages: [{ role: "developer", content: "follow rules" }, { role: "user", content: "hi" }] };
+  const normalizedDev = withSingleLeadingSystem(dev);
+  assert.notEqual(normalizedDev, dev);
+  assert.deepEqual(normalizedDev.messages, [
+    { role: "system", content: "follow rules" },
+    { role: "user", content: "hi" },
+  ]);
+
+  const mixed: JsonMap = {
+    messages: [
+      { role: "developer", content: "first" },
+      { role: "user", content: "hi" },
+      { role: "system", content: "second" },
+      { role: "assistant", content: "hello" },
+      { role: "developer", content: [{ type: "text", text: "third" }] },
+    ],
+  };
+  assert.deepEqual(withSingleLeadingSystem(mixed).messages, [
+    { role: "system", content: "first\n\nsecond\n\nthird" },
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "hello" },
+  ]);
+
+  const arraySystem: JsonMap = {
+    messages: [{ role: "system", content: [{ type: "text", text: "sys" }] }, { role: "user", content: "hi" }],
+  };
+  const normalizedArray = withSingleLeadingSystem(arraySystem);
+  assert.notEqual(normalizedArray, arraySystem);
+  assert.deepEqual(normalizedArray.messages, [
+    { role: "system", content: "sys" },
+    { role: "user", content: "hi" },
+  ]);
 });
 
 test("only models with merged system messages receive a single system message", () => {
@@ -67,4 +106,33 @@ test("only models with merged system messages receive a single system message", 
   assert.equal(systemCount(prepareBody(deployment("openai", true), "/chat/completions", scattered)), 1);
   assert.equal(systemCount(prepareBody(deployment("openai_compat", false), "/chat/completions", scattered)), 3);
   assert.equal(systemCount(prepareBody(deployment("openai_compat"), "/chat/completions", scattered)), 3);
+});
+
+test("prepareBody leaves anthropic routes and non-chat paths untouched when merge_system_messages is true", () => {
+  const cachedSystem: JsonMap = {
+    model: "claude-sonnet-4-6",
+    messages: [
+      { role: "system", content: [{ type: "text", text: "be brief", cache_control: { type: "ephemeral" } }] },
+      { role: "system", content: "be kind" },
+      { role: "user", content: "hi" },
+    ],
+  };
+  const anthropicMerged = prepareBody(deployment("anthropic", true), "/chat/completions", cachedSystem);
+  const anthropicPlain = prepareBody(deployment("anthropic", false), "/chat/completions", cachedSystem);
+  assert.deepEqual(anthropicMerged, anthropicPlain);
+  assert.equal(Array.isArray(anthropicMerged.system), true);
+  assert.equal((anthropicMerged.system as JsonMap[]).length, 2);
+
+  const nativeMessages: JsonMap = {
+    model: "claude-sonnet-4-6",
+    system: "sys",
+    messages: [{ role: "developer", content: "dev" }, { role: "user", content: "hi" }],
+  };
+  assert.deepEqual(
+    prepareBody(deployment("anthropic", true), "/v1/messages", nativeMessages),
+    prepareBody(deployment("anthropic", false), "/v1/messages", nativeMessages),
+  );
+
+  const embedded = prepareBody(deployment("openai_compat", true), "/embeddings", scattered);
+  assert.deepEqual(embedded.messages, scattered.messages);
 });

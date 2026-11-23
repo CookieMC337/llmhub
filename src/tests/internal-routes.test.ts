@@ -46,6 +46,7 @@ function groupRow(alias: string, routes: FakeRoute[], change: Record<string, unk
     enabled: true,
     vendor: "openai",
     displayName: "",
+    mergeSystemMessages: false,
     strategy: "priority",
     billingMode: "routed",
     priceInput: 0,
