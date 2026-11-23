@@ -143,14 +143,14 @@ export default function McpPage() {
           <ServerDialog
             key={`form-${dialogKey}`}
             state={formState}
-            editing={editing}
+            editing={editing?.kind === "media" ? null : editing}
             redirectUri={redirectUri}
             onSaved={replace}
           />
           <MediaDialog
             key={`media-${dialogKey}`}
             state={mediaState}
-            editing={editing}
+            editing={editing?.kind === "media" ? editing : null}
             models={data.mediaModels}
             onSaved={replace}
           />

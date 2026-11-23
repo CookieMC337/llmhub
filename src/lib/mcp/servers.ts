@@ -65,7 +65,11 @@ export async function loadCompanyMcpServers(rawOrgId: unknown) {
   if (!inCompany(session, orgId)) throw new AuthError("FORBIDDEN");
   const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { id: true, alias: true } });
   if (!org) throw new Error("ORG_NOT_FOUND");
-  const rows = await prisma.mcpServer.findMany({ where: { template: true }, select: serverSelect, orderBy: { name: "asc" } });
+  const rows = await prisma.mcpServer.findMany({
+    where: { template: true, kind: { not: "media" } },
+    select: serverSelect,
+    orderBy: { name: "asc" },
+  });
   const access = mcpAccess(session, companyOf(session));
   return {
     company: org,

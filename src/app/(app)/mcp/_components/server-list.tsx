@@ -97,7 +97,7 @@ export default function ServerList({
               <RowCard
                 key={server.id}
                 title={server.name}
-                description={server.description || <span className="font-mono text-xs break-all">{server.url}</span>}
+                description={server.description || (server.url ? <span className="font-mono text-xs break-all">{server.url}</span> : undefined)}
                 aside={<ServerStatusChip server={server} />}
                 chips={
                   server.kind !== "remote" || server.template || server.internal ? (

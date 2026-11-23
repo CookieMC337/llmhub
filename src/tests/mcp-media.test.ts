@@ -1,4 +1,4 @@
-import { API_KEY, gateway, gatewayRequest, groupRow, resetGateway, type UpstreamCall } from "./support/gateway-harness";
+import { API_KEY, gateway, gatewayRequest, groupRow, resetGateway, UPSTREAM, type UpstreamCall } from "./support/gateway-harness";
 import { recordedPrisma } from "./support/recorded-prisma";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -367,4 +367,148 @@ test("stored media types come only from valid audio and video tokens", () => {
   assert.equal(mediaType("audio/<script>", "audio/", "audio/mpeg"), "audio/mpeg");
   assert.equal(mediaType("video/mp4", "audio/", "audio/mpeg"), "audio/mpeg");
   assert.equal(mediaType("", "video/", "video/mp4"), "video/mp4");
+});
+
+test("transcribe_audio rejects invalid or expired own-origin media links without fetching", async () => {
+  setup(() => Response.json({ text: "nope" }));
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/mcp", {}));
+  const spec = mediaSpec(FULL_SPEC);
+  let fetches = 0;
+  const countFetch = async () => {
+    fetches += 1;
+    return new Response(PIXEL, { headers: { "content-type": "audio/mpeg" } });
+  };
+  const valid = new URL(mediaLink("obj1"));
+  const forged = new URL(valid);
+  forged.searchParams.set("signature", "forged");
+  const expired = mediaLink("obj1", Date.now() - MEDIA_LINK_TTL_MS - 1_000);
+
+  const forgedOutcome = await callMedia(spec, TRANSCRIBE_AUDIO_TOOL, { url: forged.toString() }, principal, countFetch);
+  assert.equal(forgedOutcome.isError, true);
+  assert.match(forgedOutcome.text, /invalid or expired/);
+
+  const expiredOutcome = await callMedia(spec, TRANSCRIBE_AUDIO_TOOL, { url: expired }, principal, countFetch);
+  assert.equal(expiredOutcome.isError, true);
+  assert.match(expiredOutcome.text, /invalid or expired/);
+  assert.equal(fetches, 0);
+});
+
+test("transcribe_audio cancels response bodies on non-OK status or oversized content-length", async () => {
+  setup(() => Response.json({ text: "nope" }));
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/mcp", {}));
+  const spec = mediaSpec(FULL_SPEC);
+  const trackedResponse = (status: number, headers: Record<string, string>) => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(PIXEL);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    return { res: new Response(body, { status, headers }), wasCancelled: () => cancelled };
+  };
+
+  const notOk = trackedResponse(404, { "content-type": "text/plain" });
+  const notOkOutcome = await callMedia(
+    spec,
+    TRANSCRIBE_AUDIO_TOOL,
+    { url: "https://cdn.example.com/missing.wav" },
+    principal,
+    async () => notOk.res,
+  );
+  assert.equal(notOkOutcome.isError, true);
+  assert.match(notOkOutcome.text, /404/);
+  assert.equal(notOk.wasCancelled(), true);
+
+  const oversized = trackedResponse(200, { "content-length": String(26 * 1024 * 1024) });
+  const oversizedOutcome = await callMedia(
+    spec,
+    TRANSCRIBE_AUDIO_TOOL,
+    { url: "https://cdn.example.com/huge.wav" },
+    principal,
+    async () => oversized.res,
+  );
+  assert.equal(oversizedOutcome.isError, true);
+  assert.match(oversizedOutcome.text, /25 MB/);
+  assert.equal(oversized.wasCancelled(), true);
+});
+
+test("transcribe_audio logs plain-text upstream responses", async () => {
+  setup((call) =>
+    call.url.endsWith("/audio/transcriptions")
+      ? new Response("plain transcript", { headers: { "content-type": "text/plain" } })
+      : new Response(PIXEL, { headers: { "content-type": "audio/wav" } }),
+  );
+  gateway.key = { ...gateway.key, logContent: true };
+  recordedPrisma.handlers.user = {
+    findUnique: ({ where }: { where: { id: string } }) =>
+      where.id === gateway.key.userId
+        ? { id: where.id, blocked: false, orgId: null, spend: 0, maxBudget: 0, budgetDuration: "", spendResetAt: null, createdAt: new Date(0), logContent: true }
+        : null,
+  };
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/mcp", {}));
+  const outcome = await callMedia(
+    mediaSpec(FULL_SPEC),
+    TRANSCRIBE_AUDIO_TOOL,
+    { url: "https://cdn.example.com/a.wav" },
+    principal,
+    async () => new Response(PIXEL, { headers: { "content-type": "audio/wav" } }),
+  );
+  assert.equal(outcome.isError, false, outcome.text);
+  assert.deepEqual(JSON.parse(outcome.text), { text: "plain transcript" });
+  const [log] = await bookedLogs(1);
+  assert.equal(((log?.contents as JsonMap)?.create as JsonMap)?.response, "plain transcript");
+});
+
+test("get_video stores filename extension derived from content-type", async () => {
+  const stored = setup((call) => {
+    if (call.url.endsWith("/videos") && call.body) return Response.json({ id: "vid_webm", object: "video", status: "queued" });
+    if (call.url.endsWith("/videos/vid_webm")) return Response.json({ id: "vid_webm", status: "completed", progress: 100 });
+    if (call.url.endsWith("/videos/vid_webm/content")) {
+      return new Response(PIXEL, { headers: { "content-type": "video/webm; codecs=vp9" } });
+    }
+    return Response.json({});
+  });
+  const started = await callTool(GENERATE_VIDEO_TOOL, { prompt: "a fox running" });
+  assert.equal(started.isError, false, started.text);
+  const done = await callTool(GET_VIDEO_TOOL, { video_id: String(started.json.video_id) });
+  assert.equal(done.isError, false, done.text);
+  const video = done.json.video as JsonMap;
+  const saved = stored.find((row) => row.id === video.file_id);
+  assert.equal(saved?.filename, "video.webm");
+  assert.equal(saved?.contentType, "video/webm");
+});
+
+test("media tools preserve caller per-request costCap from x-hub-max-cost", async () => {
+  setup(imageReply);
+  gateway.groups.set(
+    IMAGE_MODEL,
+    groupRow(IMAGE_MODEL, {
+      deployments: [
+        {
+          id: `${IMAGE_MODEL}-route`,
+          kind: "openai_compat",
+          baseUrl: UPSTREAM,
+          model: IMAGE_MODEL,
+          weight: 1,
+          costInput: 1000,
+          costOutput: 1000,
+          providerId: null,
+          provider: null,
+        },
+      ],
+    }),
+  );
+  const { gateRequest } = await import("@/lib/gateway/access/gate");
+  const principal = await gateRequest(gatewayRequest("/api/v1/chat/completions", {}, { "x-hub-max-cost": "0.0001" }));
+  assert.deepEqual(principal.trace?.costCap, { limit: 0.0001, budget: null });
+  const outcome = await callMedia(mediaSpec(FULL_SPEC), GENERATE_IMAGE_TOOL, { prompt: "a fox" }, principal);
+  assert.equal(outcome.isError, true);
+  assert.match(outcome.text, /per-request limit/);
+  assert.equal(gateway.upstream.length, 0);
 });

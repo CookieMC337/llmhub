@@ -4,9 +4,8 @@ import { signingSecret } from "@/lib/crypto";
 import { env } from "@/lib/env";
 import { allowEndpoint, allowModel, applyGuardrails, modelChain, withTrace } from "@/lib/gateway/access/gate";
 import { gatewayPath } from "@/lib/gateway/api-paths";
-import { assertBudget } from "@/lib/gateway/billing/billing";
+import { assertBudget, usageFromUnknown } from "@/lib/gateway/billing/billing";
 import { capRequestCost } from "@/lib/gateway/billing/cost-cap";
-import { usageFromUnknown } from "@/lib/gateway/billing/billing";
 import { meter } from "@/lib/gateway/billing/meter";
 import { estimateTokens } from "@/lib/gateway/billing/tokens";
 import { asRecord, ownerId } from "@/lib/gateway/core";
@@ -19,6 +18,7 @@ import { logger } from "@/lib/logging/logger";
 import { McpError } from "@/lib/mcp/errors";
 import { guardedFetch } from "@/lib/mcp/transport";
 import { parseJsonOrNull } from "@/lib/utils/json";
+import { cancelQuietly } from "@/lib/utils/streams";
 import type { JsonMap, Principal, StoredObjectRecord } from "@/types/gateway";
 import type { McpFetch, McpMediaKind, McpMediaSpec, McpToolOutcome, McpToolSpec } from "@/types/mcp";
 
@@ -49,6 +49,14 @@ const AUDIO_TYPES: Record<string, string> = {
   flac: "audio/flac",
 };
 const VIDEO_DONE = "completed";
+const VIDEO_EXTENSIONS: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "video/ogg": "ogv",
+  "video/x-matroska": "mkv",
+  "video/mpeg": "mpeg",
+};
 const MEDIA_TYPE = /^(?:audio|video)\/[a-z0-9][a-z0-9.+-]{0,63}$/;
 const VIDEO_FAILED = new Set(["failed", "cancelled", "expired"]);
 const LINK_NOTE = "Links open without an API key and expire after 7 days.";
@@ -184,7 +192,7 @@ export function isMediaObject(meta: unknown, purpose: string): boolean {
   return purpose === MEDIA_PURPOSE && asRecord(meta)?.media === true;
 }
 
-function mediaIdOfLink(raw: string): string | null {
+function ownMediaUrl(raw: string): URL | null {
   let url: URL;
   try {
     url = new URL(raw);
@@ -192,8 +200,13 @@ function mediaIdOfLink(raw: string): string | null {
     return null;
   }
   const own = new URL(env.NEXT_PUBLIC_APP_URL);
-  const match = /^\/api\/media\/([^/]+)$/.exec(url.pathname);
-  if (url.origin !== own.origin || !match?.[1]) return null;
+  return url.origin === own.origin && url.pathname.startsWith("/api/media/") ? url : null;
+}
+
+function mediaIdOfLink(raw: string): string | null {
+  const url = ownMediaUrl(raw);
+  const match = url ? /^\/api\/media\/([^/]+)$/.exec(url.pathname) : null;
+  if (!url || !match?.[1]) return null;
   const id = decodedSegment(match[1]);
   return id && mediaLinkValid(id, url.searchParams.get("expires"), url.searchParams.get("signature")) ? id : null;
 }
@@ -249,11 +262,12 @@ async function metered<T extends Parameters<Meter["ok"]>[0] & { json?: unknown }
   body: JsonMap,
   run: () => Promise<T>,
   usageOf: (hit: T) => Parameters<Meter["ok"]>[1] = (hit) => usageFromUnknown(asRecord(hit.json)?.usage, hit.json),
+  responseOf: (hit: T) => unknown = (hit) => hit.json,
 ): Promise<T> {
   const usage = meter(principal, model, body);
   try {
     const hit = await run();
-    await usage.ok(hit, usageOf(hit));
+    await usage.ok(hit, usageOf(hit), responseOf(hit));
     return hit;
   } catch (err) {
     await usage.fail(err);
@@ -264,6 +278,10 @@ async function metered<T extends Parameters<Meter["ok"]>[0] & { json?: unknown }
 export function mediaType(header: string, family: "audio/" | "video/", fallback: string): string {
   const type = (header.split(";")[0] ?? "").trim().toLowerCase();
   return type.startsWith(family) && MEDIA_TYPE.test(type) ? type : fallback;
+}
+
+function videoFilename(contentType: string): string {
+  return `video.${VIDEO_EXTENSIONS[contentType] ?? "mp4"}`;
 }
 
 function success(payload: JsonMap): McpToolOutcome {
@@ -317,7 +335,7 @@ async function textToSpeech({ spec, args, principal }: MediaContext): Promise<Mc
     model,
     body,
     () => forwardToModel(aliases, principal, "/audio/speech", clean, { binary: true }),
-    () => ({ prompt_tokens: estimateTokens(input) }),
+    () => ({ prompt_tokens: estimateTokens(typeof clean.input === "string" ? clean.input : input) }),
   );
   const contentType = mediaType(hit.contentType, "audio/", AUDIO_TYPES[format]!);
   const audio = await storeMedia(principal, model, { filename: `speech.${format}`, contentType, payload: hit.raw });
@@ -366,14 +384,17 @@ async function getVideo({ args, principal }: MediaContext): Promise<McpToolOutco
   }
   const content = await forwardToModel([model], principal, `/videos/${upstreamId}/content`, null, { method: "GET", binary: true });
   const contentType = mediaType(content.contentType, "video/", "video/mp4");
-  const video = await storeMedia(principal, model, { filename: "video.mp4", contentType, payload: content.raw });
+  const video = await storeMedia(principal, model, { filename: videoFilename(contentType), contentType, payload: content.raw });
   await refreshVideo(id, { ...json, media_file: { file_id: video.file_id, content_type: contentType } });
   return success({ ...videoView(json, id), video, note: `Give the url to the user as a link. ${LINK_NOTE}` });
 }
 
 async function readLimited(res: Response): Promise<Uint8Array> {
   const declared = Number(res.headers.get("content-length") ?? 0);
-  if (declared > MAX_AUDIO_BYTES) throw new ToolInputError("The audio file is larger than 25 MB.");
+  if (declared > MAX_AUDIO_BYTES) {
+    await cancelQuietly(res.body);
+    throw new ToolInputError("The audio file is larger than 25 MB.");
+  }
   const reader = res.body?.getReader();
   if (!reader) return new Uint8Array();
   const parts: Uint8Array[] = [];
@@ -383,7 +404,7 @@ async function readLimited(res: Response): Promise<Uint8Array> {
     if (done) break;
     size += value.byteLength;
     if (size > MAX_AUDIO_BYTES) {
-      await reader.cancel();
+      await cancelQuietly(reader);
       throw new ToolInputError("The audio file is larger than 25 MB.");
     }
     parts.push(value);
@@ -404,8 +425,9 @@ async function audioSource(ctx: MediaContext): Promise<{ payload: Uint8Array; fi
     if (object?.kind !== "file" || !canReadObject(object, ctx.principal)) throw new ToolInputError("File not found.");
     return storedAudio(object);
   }
-  const linked = url ? mediaIdOfLink(url) : null;
-  if (linked) {
+  if (url && ownMediaUrl(url)) {
+    const linked = mediaIdOfLink(url);
+    if (!linked) throw new ToolInputError("media link is invalid or expired");
     const object = await getObject(linked);
     if (object?.kind !== "file" || !isMediaObject(object.meta, object.purpose)) throw new ToolInputError("File not found.");
     return storedAudio(object);
@@ -418,7 +440,10 @@ async function audioSource(ctx: MediaContext): Promise<{ payload: Uint8Array; fi
     if (err instanceof McpError) throw new ToolInputError("This url cannot be fetched. Use a public https url.", { cause: err });
     throw err;
   }
-  if (!res.ok) throw new ToolInputError(`Fetching the audio failed with status ${res.status}.`);
+  if (!res.ok) {
+    await cancelQuietly(res.body);
+    throw new ToolInputError(`Fetching the audio failed with status ${res.status}.`);
+  }
   const name = new URL(url).pathname.split("/").pop() || "audio";
   return { payload: await readLimited(res), filename: name, contentType: res.headers.get("content-type") ?? "application/octet-stream" };
 }
@@ -441,11 +466,14 @@ async function transcribeAudio(ctx: MediaContext): Promise<McpToolOutcome> {
     body,
     async () => {
       const raw = await forwardToModel(aliases, principal, "/audio/transcriptions", null, { rawBody: form, binary: true });
-      return { ...raw, json: parseJsonOrNull(new TextDecoder().decode(raw.raw)) };
+      const transcript = new TextDecoder().decode(raw.raw);
+      return { ...raw, json: parseJsonOrNull(transcript), transcript };
     },
+    undefined,
+    (hit) => hit.json ?? hit.transcript,
   );
   const json = asRecord(hit.json);
-  const transcript = typeof json?.text === "string" ? json.text : new TextDecoder().decode(hit.raw);
+  const transcript = typeof json?.text === "string" ? json.text : hit.transcript;
   return success({ text: transcript, ...(typeof json?.language === "string" ? { language: json.language } : {}) });
 }
 
@@ -462,7 +490,8 @@ const HANDLERS: Record<string, MediaHandler> = {
 async function mediaPrincipal(caller: Principal, endpoint: string): Promise<Principal> {
   const principal: Principal = { ...withTrace(caller, endpoint), pool: "api" };
   allowEndpoint(principal, gatewayPath(endpoint));
-  capRequestCost(principal, await assertBudget(principal), null);
+  const maxCost = caller.trace?.costCap?.budget === null ? caller.trace.costCap.limit : null;
+  capRequestCost(principal, await assertBudget(principal), maxCost);
   return principal;
 }
 

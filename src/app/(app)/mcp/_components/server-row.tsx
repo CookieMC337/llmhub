@@ -83,7 +83,7 @@ export function ServerName({ server }: { server: McpServerView }) {
     <div className="min-w-0 space-y-1">
       <p className="text-sm font-medium break-words text-foreground">{server.name}</p>
       {server.description ? <p className="text-xs break-words text-muted">{server.description}</p> : null}
-      <p className="font-mono text-xs break-all text-muted">{server.url}</p>
+      {server.url ? <p className="font-mono text-xs break-all text-muted">{server.url}</p> : null}
       <div className="flex flex-wrap gap-1 empty:hidden">
         <ServerKindChips server={server} />
       </div>

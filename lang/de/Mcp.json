@@ -329,11 +329,13 @@
     "description": "Gibt Chat-Modellen Tools, die mit Modellen dieses Gateways Medien erzeugen und lesen. Wähle für jedes gewünschte Tool ein Modell; Tools ohne Modell werden nicht angeboten. Ergebnisse werden als Dateien gespeichert und als Links zurückgegeben, die sich 7 Tage lang ohne API-Key öffnen lassen.",
     "mediaModel": "Medienmodell",
     "global": "Allen anbieten",
-    "globalHint": "Wenn aus, weise den Server unter Zugriff Unternehmen, Teams oder Keys zu.",
+    "globalHint": "Wenn aus, weise den Server unter „Wer ihn nutzen darf“ Unternehmen, Abteilungen oder API-Keys zu.",
     "badge": "Medien",
     "model": "{kind, select, image {Bildmodell} speech {Sprachmodell} video {Videomodell} other {Transkriptionsmodell}}",
     "modelHint": "{kind, select, image {Beantwortet generate_image.} speech {Beantwortet text_to_speech.} video {Beantwortet generate_video und get_video.} other {Beantwortet transcribe_audio.}} Aufrufer brauchen Zugriff auf das Modell; Nutzung und Budgets zählen für den Aufrufer.",
     "none": "Keins",
+    "noModels": "Noch kein aktives Modell mit Route über einen API-Anbieter verfügbar. Lege unter Modelle eines an oder aktiviere es vor dem Speichern.",
+    "unavailableModel": "Deaktiviert oder entfernt; wähle ein anderes Modell oder Keins",
     "voice": "Standardstimme",
     "voiceHint": "Gilt, wenn das Modell keine Stimme nennt. Leer lassen für alloy."
   }
