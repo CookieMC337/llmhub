@@ -602,3 +602,67 @@ test("block types the hub does not read pass the schema unchanged and block only
   assert.deepEqual(nativeMessagesBody(structuredClone(body)).messages, body.messages);
   assert.match(chatIncompatibility(request) ?? "", /^messages\.1\.content\.1\.type: content block "tool_removal" requires an Anthropic deployment/);
 });
+
+test("text between tool call argument chunks never splits a tool_use block", async () => {
+  const call = (index: number, extra: JsonMap) => chunk({ tool_calls: [{ index, type: "function", ...extra }] });
+  const events = await anthropicEvents(
+    pipeChatStream(
+      chatSse([
+        call(0, { id: "call_a", function: { name: "Read", arguments: "" } }),
+        call(0, { function: { arguments: '{"file_path": ' } }),
+        chunk({ content: "\n" }),
+        call(0, { function: { arguments: '"/repo/a.go"}' } }),
+        chunk({ content: "Reading " }),
+        call(1, { id: "call_b", function: { name: "Read", arguments: '{"file_path": "/repo/b.go"' } }),
+        chunk({ content: "both." }),
+        call(1, { function: { arguments: "}" } }),
+        chunk({ content: "\n\n" }),
+        chunk({}, "tool_calls"),
+        "[DONE]",
+      ]),
+      new MessagesStreamEncoder("alias"),
+    ),
+  );
+  const closed = new Set<number>();
+  const inputs = new Map<number, string>();
+  const texts = new Map<number, string>();
+  const starts = new Map<number, JsonMap>();
+  for (const { event, data } of events) {
+    const index = Number(data.index);
+    if (event === "content_block_start") starts.set(index, data.content_block as JsonMap);
+    if (event === "content_block_stop") closed.add(index);
+    if (event !== "content_block_delta") continue;
+    assert.equal(closed.has(index), false, `delta after stop on block ${index}`);
+    const delta = data.delta as JsonMap;
+    if (delta.type === "input_json_delta") inputs.set(index, (inputs.get(index) ?? "") + String(delta.partial_json));
+    if (delta.type === "text_delta") texts.set(index, (texts.get(index) ?? "") + String(delta.text));
+  }
+  const blocks = [...starts.entries()].map(([index, block]) =>
+    block.type === "tool_use" ? { tool: block.id, input: JSON.parse(inputs.get(index) ?? "") } : { text: texts.get(index) },
+  );
+  assert.deepEqual(blocks, [
+    { tool: "call_a", input: { file_path: "/repo/a.go" } },
+    { text: "\nReading " },
+    { tool: "call_b", input: { file_path: "/repo/b.go" } },
+    { text: "both.\n\n" },
+  ]);
+  assert.equal(events.at(-2)?.data.delta && (events.at(-2)!.data.delta as JsonMap).stop_reason, "tool_use");
+});
+
+test("whitespace that arrives while a tool call is open is dropped", async () => {
+  const events = await anthropicEvents(
+    pipeChatStream(
+      chatSse([
+        chunk({ tool_calls: [{ index: 0, id: "call_a", type: "function", function: { name: "Glob", arguments: "" } }] }),
+        chunk({ content: "\n" }),
+        chunk({ tool_calls: [{ index: 0, function: { arguments: '{"pattern": "*.go"}' } }] }),
+        chunk({ content: " \n" }),
+        chunk({}, "tool_calls"),
+        "[DONE]",
+      ]),
+      new MessagesStreamEncoder("alias"),
+    ),
+  );
+  const starts = events.filter((e) => e.event === "content_block_start").map((e) => (e.data.content_block as JsonMap).type);
+  assert.deepEqual(starts, ["tool_use"]);
+});

@@ -465,6 +465,7 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
   private done = false;
   private signature = "";
   private searches = 0;
+  private held = "";
 
   constructor(
     private model: string,
@@ -590,7 +591,17 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
     return out;
   }
 
+  private release(): string[] {
+    const held = this.held;
+    this.held = "";
+    return held.trim() ? [...this.text(held), ...this.close()] : [];
+  }
+
   private text(delta: string): string[] {
+    if (this.open === "tool_use") {
+      this.held += delta;
+      return [];
+    }
     const out: string[] = [];
     if (this.open !== "text") {
       out.push(...this.close());
@@ -617,6 +628,7 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
   private tool(event: ToolCallEvent): string[] {
     if (event.type === "start") {
       const out = this.close();
+      out.push(...this.release());
       this.index += 1;
       this.open = "tool_use";
       this.hasTools = true;
@@ -667,6 +679,7 @@ export class MessagesStreamEncoder implements ChatStreamEncoder {
     const out: string[] = [];
     for (const event of this.deltas.flush()) out.push(...this.tool(event));
     out.push(...this.close());
+    out.push(...this.release());
     const matched = this.reason === "stop" ? this.matched : null;
     const stopReason = stopReasonFromFinish(this.reason, this.hasTools, matched);
     const usage = anthropicUsageFromChat(this.usage);
