@@ -15,6 +15,7 @@ import { loadMcpServersAction, saveMcpInstallationAction, setMcpTemplateAction }
 import AccessDialog from "./_components/access-dialog";
 import AddServerMenu, { type AddChoice } from "./_components/add-server-menu";
 import BuilderDialog from "./_components/builder-dialog";
+import MediaDialog from "./_components/media-dialog";
 import PermissionsDialog from "./_components/permissions-dialog";
 import ServerDialog from "./_components/server-dialog";
 import ServerList from "./_components/server-list";
@@ -37,6 +38,7 @@ export default function McpPage() {
   const permissionsState = useOverlayState();
   const installState = useOverlayState();
   const builderState = useOverlayState();
+  const mediaState = useOverlayState();
 
   if (!data) {
     return <PageStatus icon={Blocks} title={t("title")} subtitle={t("subtitle")} state={page} filters={1} />;
@@ -66,11 +68,12 @@ export default function McpPage() {
 
   function add(choice: AddChoice) {
     if (choice === "build") openWith(builderState, () => {});
+    else if (choice === "media") openWith(mediaState, () => setEditing(null));
     else openWith(formState, () => setEditing(null));
   }
 
   const handlers = {
-    onEdit: (server: McpServerView) => openWith(formState, () => setEditing(server)),
+    onEdit: (server: McpServerView) => openWith(server.kind === "media" ? mediaState : formState, () => setEditing(server)),
     onAccess: (server: McpServerView) => openWith(accessState, () => setAccess(server)),
     onPermissions: (server: McpServerView) => openWith(permissionsState, () => setPermissions(server)),
     onInstall: (server: McpServerView) => openWith(installState, () => setInstall(server)),
@@ -138,6 +141,13 @@ export default function McpPage() {
             state={formState}
             editing={editing}
             redirectUri={redirectUri}
+            onSaved={replace}
+          />
+          <MediaDialog
+            key={`media-${dialogKey}`}
+            state={mediaState}
+            editing={editing}
+            models={data.mediaModels}
             onSaved={replace}
           />
           <PermissionsDialog key={`permissions-${dialogKey}`} state={permissionsState} server={permissions} onSaved={replace} />

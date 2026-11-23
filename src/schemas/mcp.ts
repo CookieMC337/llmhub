@@ -169,6 +169,16 @@ export const builderDraftSchema = z.object({
   links: z.array(builderLinkSchema).max(MAX_BUILDER_LINKS).default([]),
 });
 
+export const mediaServerSchema = z
+  .object({
+    name: z.string().trim().min(1).max(48),
+    description: z.string().trim().max(500).default(""),
+    imageModel: z.string().trim().min(1).max(200),
+    enabled: z.boolean().default(true),
+    global: z.boolean().default(false),
+  })
+  .strict();
+
 export const hostedServerSchema = z
   .object({
     name: z.string().trim().min(1).max(48),

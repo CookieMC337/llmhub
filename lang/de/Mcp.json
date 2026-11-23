@@ -305,8 +305,8 @@
     "tools": "{count, plural, =0 {Keine Tools} one {# Tool} other {# Tools}}",
     "action": "{state, select, connected {Verbindung bearbeiten} paused {Verbindung bearbeiten} other {Verbinden}}"
   },
-  "addChoice": "{choice, select, build {Aus API-Doku bauen} other {Server verbinden}}",
-  "addChoiceHint": "{choice, select, build {MCP Anything liest die Dokumentation einer HTTP-API und macht aus ihren Aufrufen Tools.} other {Füge einen laufenden MCP-Server über seine Adresse hinzu.}}",
+  "addChoice": "{choice, select, build {Aus API-Doku bauen} media {Medien-Tools hinzufügen} other {Server verbinden}}",
+  "addChoiceHint": "{choice, select, build {MCP Anything liest die Dokumentation einer HTTP-API und macht aus ihren Aufrufen Tools.} media {Lässt Chat-Modelle Bilder mit einem Bildmodell dieses Gateways erzeugen.} other {Füge einen laufenden MCP-Server über seine Adresse hinzu.}}",
   "list": {
     "search": "Server durchsuchen",
     "filter": "Anzeigen",
@@ -323,5 +323,16 @@
     "menu": "Aktionen für {name}",
     "menuItem": "{action, select, edit {Bearbeiten} access {Wer ihn nutzen darf} permissions {Rollen und Berechtigungen} install {{company, select, true {API-Key des Unternehmens} other {API-Keys der Unternehmen}}} reload {Tools neu laden} signin {Erneut anmelden} signout {Abmelden} enable {Aktivieren} disable {Deaktivieren} delete {Löschen} other {{action}}}",
     "toggled": "{enabled, select, true {Server aktiviert} other {Server deaktiviert}}"
+  },
+  "media": {
+    "title": "{mode, select, edit {{name} bearbeiten} other {Medien-Tools hinzufügen}}",
+    "description": "Gibt Chat-Modellen Tools, die mit einem Modell dieses Gateways Medien erzeugen. Ergebnisse werden als Dateien gespeichert und als Links zurückgegeben, die sich 7 Tage lang ohne API-Key öffnen lassen.",
+    "imageModel": "Bildmodell",
+    "imageModelHint": "Modell, das generate_image beantwortet. Aufrufer brauchen Zugriff darauf; Nutzung und Budgets zählen für den Aufrufer.",
+    "imageModelPlaceholder": "Modell wählen",
+    "mediaModel": "Medienmodell",
+    "global": "Allen anbieten",
+    "globalHint": "Wenn aus, weise den Server unter Zugriff Unternehmen, Teams oder Keys zu.",
+    "badge": "Medien"
   }
 }

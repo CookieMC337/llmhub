@@ -305,8 +305,8 @@
     "tools": "{count, plural, =0 {No tools} one {# tool} other {# tools}}",
     "action": "{state, select, connected {Edit connection} paused {Edit connection} other {Connect}}"
   },
-  "addChoice": "{choice, select, build {Build from API docs} other {Connect a server}}",
-  "addChoiceHint": "{choice, select, build {MCP Anything reads the documentation of any HTTP API and turns its calls into tools.} other {Add an MCP server that already runs, by its address.}}",
+  "addChoice": "{choice, select, build {Build from API docs} media {Add media tools} other {Connect server}}",
+  "addChoiceHint": "{choice, select, build {MCP Anything reads the documentation of any HTTP API and turns its calls into tools.} media {Lets chat models create images with an image model on this gateway.} other {Add an MCP server that already runs, by its address.}}",
   "list": {
     "search": "Search servers",
     "filter": "Show",
@@ -323,5 +323,16 @@
     "menu": "Actions for {name}",
     "menuItem": "{action, select, edit {Edit} access {Who can use it} permissions {Roles and permissions} install {{company, select, true {Company API key} other {Company API keys}}} reload {Reload tools} signin {Sign in again} signout {Sign out} enable {Enable} disable {Disable} delete {Delete} other {{action}}}",
     "toggled": "{enabled, select, true {Server enabled} other {Server disabled}}"
+  },
+  "media": {
+    "title": "{mode, select, edit {Edit {name}} other {Add media tools}}",
+    "description": "Gives chat models tools that create media with a model on this gateway. Results are stored as files and returned as links that open without an API key for 7 days.",
+    "imageModel": "Image model",
+    "imageModelHint": "Model that answers generate_image. Callers need access to it; usage and budgets count for the caller.",
+    "imageModelPlaceholder": "Choose a model",
+    "mediaModel": "Media model",
+    "global": "Offer to everyone",
+    "globalHint": "When off, assign the server to companies, teams, or keys under Access.",
+    "badge": "Media"
   }
 }

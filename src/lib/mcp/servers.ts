@@ -16,15 +16,18 @@ import { assertRemoteAuth, assertUrl, connectionFields, parse, secretFor, secret
 import { probe, storeProbe } from "@/lib/mcp/server-probe";
 import { auditShape, loadRow, scopedView, serverSelect, viewOf, type ServerRow } from "@/lib/mcp/server-view";
 import { serverRecord } from "@/lib/mcp/toolset";
-import { BUILDER_MODEL_KEY, authUsesName, hostedServerSchema, mcpAssignmentsSchema, mcpServerInputSchema } from "@/schemas/mcp";
+import { MEDIA_SERVER_URL, mediaToolSpecs } from "@/lib/mcp/media";
+import { enabledModelChoices } from "@/lib/models/aliases";
+import { BUILDER_MODEL_KEY, authUsesName, hostedServerSchema, mcpAssignmentsSchema, mcpServerInputSchema, mediaServerSchema } from "@/schemas/mcp";
 import type { Prisma } from "@/generated/prisma/client";
+import type { McpMediaModel } from "@/types/mcp";
 
 export async function loadMcpServerList() {
   const session = await requireActor();
   if (!seesMcp(session)) throw new AuthError("FORBIDDEN");
   const company = companyOf(session);
   const access = mcpAccess(session, company);
-  const [rows, setting, models, companies] = await Promise.all([
+  const [rows, setting, models, mediaModels, companies] = await Promise.all([
     prisma.mcpServer.findMany({
       where: company ? visibleToCompany(company) : undefined,
       select: serverSelect,
@@ -32,6 +35,7 @@ export async function loadMcpServerList() {
     }),
     access.canManage ? prisma.setting.findUnique({ where: { key: BUILDER_MODEL_KEY } }) : null,
     access.canManage ? builderModels() : [],
+    access.canManage ? mediaModelChoices() : [],
     access.canInstall
       ? prisma.organization.findMany({
           where: company ? { id: company } : undefined,
@@ -48,6 +52,7 @@ export async function loadMcpServerList() {
     redirectUri: access.canManage ? mcpOAuthRedirectUri() : "",
     builderModel: setting?.value ?? "",
     models,
+    mediaModels,
     canTestModels: access.canManage && hasPerm(session.permissions, PERMISSIONS.SETTINGS_MANAGE),
   };
 }
@@ -186,9 +191,101 @@ export async function createHostedMcpServer(raw: unknown) {
   return { server: scopedView(await loadRow(created.id), session) };
 }
 
+async function mediaModelChoices(): Promise<McpMediaModel[]> {
+  const choices = (await enabledModelChoices()).filter((choice) => choice.pools.includes("api"));
+  return choices
+    .map((choice) => ({ alias: choice.alias, label: choice.label, media: choice.role === "media" }))
+    .sort((a, b) => Number(b.media) - Number(a.media) || a.alias.localeCompare(b.alias));
+}
+
+async function assertMediaModel(alias: string): Promise<void> {
+  if (!(await mediaModelChoices()).some((choice) => choice.alias === alias)) throw new Error("VALIDATION");
+}
+
+function mediaFields(imageModel: string) {
+  const spec = { image: { model: imageModel } };
+  return {
+    spec: spec as Prisma.InputJsonValue,
+    tools: mediaToolSpecs(spec) as unknown as Prisma.InputJsonValue,
+    refreshedAt: new Date(),
+  };
+}
+
+export async function createMediaMcpServer(raw: unknown) {
+  const session = await requireMcpManager();
+  const input = parse(mediaServerSchema, raw);
+  await assertMediaModel(input.imageModel);
+  let created: ServerRow;
+  try {
+    created = await prisma.mcpServer.create({
+      data: {
+        name: input.name,
+        description: input.description,
+        url: MEDIA_SERVER_URL,
+        kind: "media",
+        internal: false,
+        enabled: input.enabled,
+        global: input.global,
+        ...mediaFields(input.imageModel),
+      },
+      select: serverSelect,
+    });
+  } catch (err) {
+    if (isPrismaCode(err, "P2002")) throw new Error("NAME_EXISTS", { cause: err });
+    throw err;
+  }
+  await ensureBuiltinRoles(created.id);
+  await writeAudit({
+    actor: session.user.id,
+    action: "mcp_server.create",
+    objectType: "mcp_server",
+    objectId: created.id,
+    after: { ...auditShape(created), kind: "media", imageModel: input.imageModel, global: input.global },
+  });
+  return { server: scopedView(await loadRow(created.id), session) };
+}
+
+export async function updateMediaMcpServer(raw: { id: string } & Record<string, unknown>) {
+  const session = await requireMcpManager();
+  if (!raw?.id || typeof raw.id !== "string") throw new Error("MISSING_ID");
+  const { id, ...fields } = raw;
+  const input = parse(mediaServerSchema, fields);
+  const before = await loadRow(id);
+  if (before.kind !== "media") throw new Error("VALIDATION");
+  await assertMediaModel(input.imageModel);
+  let updated: ServerRow;
+  try {
+    updated = await prisma.mcpServer.update({
+      where: { id },
+      data: {
+        name: input.name,
+        description: input.description,
+        enabled: input.enabled,
+        global: input.global,
+        ...mediaFields(input.imageModel),
+      },
+      select: serverSelect,
+    });
+  } catch (err) {
+    if (isPrismaCode(err, "P2002")) throw new Error("NAME_EXISTS", { cause: err });
+    if (isPrismaCode(err, "P2025")) throw new Error("NOT_FOUND", { cause: err });
+    throw err;
+  }
+  await writeAudit({
+    actor: session.user.id,
+    action: "mcp_server.update",
+    objectType: "mcp_server",
+    objectId: id,
+    before: auditShape(before),
+    after: { ...auditShape(updated), imageModel: input.imageModel },
+  });
+  return { server: scopedView(updated, session) };
+}
+
 export async function updateMcpServer(raw: { id: string } & Record<string, unknown>) {
   const session = await requireMcpManager();
   if (!raw?.id || typeof raw.id !== "string") throw new Error("MISSING_ID");
+  if ((await loadRow(raw.id)).kind === "media") throw new Error("VALIDATION");
   const input = parse(mcpServerInputSchema, raw);
   assertUrl(input.url, input.internal);
   const before = await loadRow(raw.id);

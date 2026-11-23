@@ -87,7 +87,7 @@ export default function ServerList({
                 description={server.description || <span className="font-mono text-xs break-all">{server.url}</span>}
                 aside={<ServerStatusChip server={server} />}
                 chips={
-                  server.kind === "hosted" || server.template || server.internal ? (
+                  server.kind !== "remote" || server.template || server.internal ? (
                     <ServerKindChips server={server} />
                   ) : undefined
                 }

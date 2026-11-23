@@ -59,6 +59,11 @@ export function ServerKindChips({ server }: { server: McpServerView }) {
           {t("hosted")}
         </Chip>
       ) : null}
+      {server.kind === "media" ? (
+        <Chip size="sm" variant="soft">
+          {t("media.badge")}
+        </Chip>
+      ) : null}
       {server.template ? (
         <Chip size="sm" variant="soft">
           {t("card.template")}

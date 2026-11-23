@@ -6,7 +6,7 @@ import { mcpAccess } from "@/lib/mcp/scope";
 import { installationViews, roleViews } from "@/lib/mcp/catalog";
 import { eraOf, toolSpecs } from "@/lib/mcp/client";
 import { toolActionsOf } from "@/lib/mcp/resolve";
-import { serverRecord } from "@/lib/mcp/toolset";
+import { serverKindOf, serverRecord } from "@/lib/mcp/toolset";
 import type { Prisma } from "@/generated/prisma/client";
 import type { AuthenticatedSession } from "@/types/auth";
 import type { McpOAuthView, McpServerStatus, McpServerView } from "@/types/mcp";
@@ -99,7 +99,8 @@ export function viewOf(row: ServerRow, canManage = true, companyId: string | nul
     oauthScopes: row.oauthScopes,
     oauth: oauthView(row),
     internal: row.internal,
-    kind: row.kind === "hosted" ? "hosted" : "remote",
+    kind: serverKindOf(row.kind),
+    imageModel: record.kind === "media" ? record.media.image.model : "",
     enabled: row.enabled,
     global: row.global,
     template: row.template,

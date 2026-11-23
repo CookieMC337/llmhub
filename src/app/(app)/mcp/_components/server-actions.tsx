@@ -87,7 +87,7 @@ export default function ServerActions({
     ...(canAssign ? (["access"] as const) : []),
     ...(canManage ? (["permissions"] as const) : []),
     ...(canConnect && !needsKey ? (["install"] as const) : []),
-    ...(canManage && server.kind !== "hosted" && server.enabled ? (["reload"] as const) : []),
+    ...(canManage && server.kind === "remote" && server.enabled ? (["reload"] as const) : []),
     ...(canManage && browserSignIn && signedIn ? (["signin", "signout"] as const) : []),
     ...(canManage ? (["toggle", "delete"] as const) : []),
   ];
